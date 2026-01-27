@@ -264,7 +264,7 @@ const extractPreviewData = (rules: SelectorRule[]) => {
   const maxRows = Math.max(...columns.map(c => c.values.length), 0);
   const rows: Record<string, string>[] = [];
 
-  for (let i = 0; i < Math.min(maxRows, 10); i++) {
+  for (let i = 0; i < maxRows; i++) {
     const row: Record<string, string> = {};
     columns.forEach(col => {
       row[col.field] = col.values[i] || '';

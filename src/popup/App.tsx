@@ -795,7 +795,7 @@ const App: React.FC = () => {
             {/* 翻页设置 */}
             <div className="p-3 border-t border-gray-800 shrink-0">
               <div className="text-xs text-gray-500 uppercase font-semibold mb-2">翻页模式</div>
-              <div className="grid grid-cols-3 gap-2">
+              <div className="flex gap-2">
                 {[
                   { id: 'none', label: '无', icon: Ban },
                   { id: 'scroll', label: '滚动', icon: ArrowDownToLine },
@@ -804,13 +804,13 @@ const App: React.FC = () => {
                   <button
                     key={id}
                     onClick={() => handleUpdateTaskConfig({ paginationType: id as PaginationType })}
-                    className={`flex flex-col items-center gap-1 p-2 rounded border text-[10px] transition-colors ${
+                    className={`flex-1 flex items-center justify-center gap-1.5 py-2 rounded border text-xs transition-colors ${
                       activeTask.paginationType === id
                         ? 'bg-blue-600 border-blue-500 text-white'
                         : 'bg-gray-800 border-gray-700 text-gray-400 hover:bg-gray-700'
                     }`}
                   >
-                    <Icon size={14} />
+                    <Icon size={12} />
                     {label}
                   </button>
                 ))}
@@ -819,9 +819,9 @@ const App: React.FC = () => {
 
             {/* 预览 */}
             {previewData.length > 0 && activeTask.sourceType === 'dom' && (
-              <div className="border-t border-gray-800 max-h-32 overflow-auto shrink-0">
+              <div className="border-t border-gray-800 max-h-48 overflow-auto shrink-0">
                 <div className="px-3 py-1 bg-gray-950 text-[10px] text-gray-500 uppercase font-semibold sticky top-0">
-                  预览 ({previewData.length})
+                  预览 ({previewData.length} 条)
                 </div>
                 <table className="w-full text-[10px]">
                   <thead>
@@ -832,10 +832,10 @@ const App: React.FC = () => {
                     </tr>
                   </thead>
                   <tbody>
-                    {previewData.slice(0, 5).map((row, i) => (
+                    {previewData.map((row, i) => (
                       <tr key={i} className="border-t border-gray-800">
                         {Object.values(row).map((val, j) => (
-                          <td key={j} className="p-1 text-gray-500 truncate max-w-[80px]">{String(val)}</td>
+                          <td key={j} className="p-1 text-gray-500 truncate max-w-[100px]">{String(val)}</td>
                         ))}
                       </tr>
                     ))}
