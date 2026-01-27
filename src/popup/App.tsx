@@ -1,5 +1,5 @@
 import React, { useState, useEffect, useCallback } from 'react';
-import { Command, Layers, Settings, Play, Trash2, Plus, MousePointer2, Ban, ArrowDownToLine, MousePointerClick, Power, PowerOff, Code, Braces, ChevronRight, ChevronDown, Globe, RefreshCw } from 'lucide-react';
+import { Command, Layers, Settings, Play, Trash2, Plus, MousePointer2, Ban, ArrowDownToLine, MousePointerClick, Power, PowerOff, Code, Braces, ChevronRight, ChevronDown, Globe, RefreshCw, Edit2, Check, X, MoreVertical } from 'lucide-react';
 import type { Task, SelectorRule, CollectedData, PaginationType } from '../types';
 import { getDomain } from '../utils/urlUtils';
 
@@ -94,28 +94,109 @@ const App: React.FC = () => {
   const [interceptedJson, setInterceptedJson] = useState<any>(null);
   const [networkRequests, setNetworkRequests] = useState<NetworkRequest[]>([]);
   const [selectedRequestId, setSelectedRequestId] = useState<string | null>(null);
+  
+  // 新建任务表单状态
+  const [isCreating, setIsCreating] = useState(false);
+  const [newTaskName, setNewTaskName] = useState('');
+  const [newTaskUrl, setNewTaskUrl] = useState('');
+  
+  // 编辑任务状态
+  const [editingTaskId, setEditingTaskId] = useState<string | null>(null);
+  const [editTaskName, setEditTaskName] = useState('');
+  const [editTaskUrl, setEditTaskUrl] = useState('');
 
   const activeTask = tasks.find(t => t.id === activeTaskId);
 
-  // 获取当前标签页信息
+  // 从 storage 加载任务
   useEffect(() => {
-    chrome.tabs.query({ active: true, currentWindow: true }, (tabs) => {
-      if (tabs[0]?.url) {
-        setCurrentUrl(tabs[0].url);
-        const domain = getDomain(tabs[0].url);
-        const initialTask: Task = {
-          id: 'init-1',
-          name: `${domain} 采集`,
-          status: 'idle',
-          url: tabs[0].url,
-          sourceType: 'dom',
-          paginationType: 'none',
-          count: 0
-        };
-        setTasks([initialTask]);
-        setActiveTaskId(initialTask.id);
+    chrome.storage.local.get(['tasks', 'activeTaskId'], (result) => {
+      if (result.tasks && result.tasks.length > 0) {
+        setTasks(result.tasks);
+        setActiveTaskId(result.activeTaskId || result.tasks[0].id);
       }
     });
+  }, []);
+
+  // 保存任务到 storage
+  useEffect(() => {
+    if (tasks.length > 0) {
+      chrome.storage.local.set({ tasks, activeTaskId });
+    }
+  }, [tasks, activeTaskId]);
+
+  // 加载当前任务的规则
+  useEffect(() => {
+    if (activeTaskId) {
+      chrome.storage.local.get([`rules_${activeTaskId}`], (result) => {
+        const savedRules = result[`rules_${activeTaskId}`];
+        if (savedRules) {
+          setRules(savedRules);
+        } else {
+          setRules([]);
+        }
+      });
+    }
+  }, [activeTaskId]);
+
+  // 保存规则
+  useEffect(() => {
+    if (activeTaskId) {
+      chrome.storage.local.set({ [`rules_${activeTaskId}`]: rules });
+    }
+  }, [rules, activeTaskId]);
+
+  // 获取当前标签页信息
+  useEffect(() => {
+    const getCurrentTab = async () => {
+      try {
+        const [tab] = await chrome.tabs.query({ active: true, currentWindow: true });
+        if (tab?.url) {
+          setCurrentUrl(tab.url);
+          
+          // 只有在没有任务时才创建初始任务
+          chrome.storage.local.get(['tasks'], (result) => {
+            if (!result.tasks || result.tasks.length === 0) {
+              const domain = getDomain(tab.url!);
+              const initialTask: Task = {
+                id: 'init-1',
+                name: `${domain} 采集`,
+                status: 'idle',
+                url: tab.url!,
+                sourceType: 'dom',
+                paginationType: 'none',
+                count: 0
+              };
+              setTasks([initialTask]);
+              setActiveTaskId(initialTask.id);
+            }
+          });
+        }
+      } catch (e) {
+        console.error('Failed to get current tab:', e);
+      }
+    };
+    
+    getCurrentTab();
+    
+    // 监听标签页切换
+    const handleTabActivated = () => {
+      chrome.tabs.query({ active: true, currentWindow: true }, (tabs) => {
+        if (tabs[0]?.url) {
+          setCurrentUrl(tabs[0].url);
+        }
+      });
+    };
+    
+    chrome.tabs.onActivated.addListener(handleTabActivated);
+    chrome.tabs.onUpdated.addListener((_tabId, changeInfo) => {
+      if (changeInfo.url) {
+        handleTabActivated();
+      }
+    });
+    
+    return () => {
+      chrome.tabs.onActivated.removeListener(handleTabActivated);
+    };
   }, []);
 
   // 监听来自 content script 的消息
@@ -187,12 +268,21 @@ const App: React.FC = () => {
   }, [rules, requestPreview]);
 
   const handleAddTask = () => {
-    const domain = getDomain(currentUrl);
+    // 显示创建表单，默认使用当前 URL
+    setNewTaskName('');
+    setNewTaskUrl(currentUrl);
+    setIsCreating(true);
+  };
+
+  const handleConfirmAddTask = () => {
+    if (!newTaskUrl.trim()) return;
+    
+    const domain = getDomain(newTaskUrl);
     const newTask: Task = {
       id: Date.now().toString(),
-      name: `${domain} 采集`,
+      name: newTaskName.trim() || `${domain} 采集`,
       status: 'idle',
-      url: currentUrl,
+      url: newTaskUrl.trim(),
       sourceType: 'dom',
       paginationType: 'none',
       count: 0
@@ -200,7 +290,56 @@ const App: React.FC = () => {
     setTasks([...tasks, newTask]);
     setActiveTaskId(newTask.id);
     setRules([]);
+    setIsCreating(false);
     setActiveTab('config');
+  };
+
+  const handleCancelAddTask = () => {
+    setIsCreating(false);
+    setNewTaskName('');
+    setNewTaskUrl('');
+  };
+
+  // 删除任务
+  const handleDeleteTask = (taskId: string, e: React.MouseEvent) => {
+    e.stopPropagation();
+    if (tasks.length <= 1) return; // 至少保留一个任务
+    
+    // 删除任务对应的规则
+    chrome.storage.local.remove([`rules_${taskId}`]);
+    
+    setTasks(prev => prev.filter(t => t.id !== taskId));
+    if (activeTaskId === taskId) {
+      const remaining = tasks.filter(t => t.id !== taskId);
+      setActiveTaskId(remaining[0]?.id || null);
+    }
+  };
+
+  // 开始编辑任务
+  const handleStartEditTask = (task: Task, e: React.MouseEvent) => {
+    e.stopPropagation();
+    setEditingTaskId(task.id);
+    setEditTaskName(task.name);
+    setEditTaskUrl(task.url);
+  };
+
+  // 保存编辑
+  const handleSaveEditTask = (e: React.MouseEvent) => {
+    e.stopPropagation();
+    if (!editingTaskId || !editTaskUrl.trim()) return;
+    
+    setTasks(prev => prev.map(t => 
+      t.id === editingTaskId 
+        ? { ...t, name: editTaskName.trim() || getDomain(editTaskUrl), url: editTaskUrl.trim() }
+        : t
+    ));
+    setEditingTaskId(null);
+  };
+
+  // 取消编辑
+  const handleCancelEditTask = (e: React.MouseEvent) => {
+    e.stopPropagation();
+    setEditingTaskId(null);
   };
 
   const handleUpdateTaskConfig = (updates: Partial<Task>) => {
@@ -318,25 +457,156 @@ const App: React.FC = () => {
               <button
                 onClick={handleAddTask}
                 className="p-1 hover:bg-gray-800 rounded text-blue-400"
+                disabled={isCreating}
               >
                 <Plus size={14} />
               </button>
             </div>
 
+            {/* 新建任务表单 */}
+            {isCreating && (
+              <div className="bg-gray-800 border border-blue-500/50 rounded p-3 space-y-2">
+                <div className="text-xs font-semibold text-blue-400 mb-2">新建任务</div>
+                <div>
+                  <label className="text-[10px] text-gray-500 block mb-1">任务名称</label>
+                  <input
+                    type="text"
+                    value={newTaskName}
+                    onChange={(e) => setNewTaskName(e.target.value)}
+                    placeholder="可选，默认使用域名"
+                    className="w-full bg-gray-900 border border-gray-700 rounded px-2 py-1.5 text-xs text-white focus:border-blue-500 outline-none"
+                    autoFocus
+                  />
+                </div>
+                <div>
+                  <label className="text-[10px] text-gray-500 block mb-1">目标网址</label>
+                  <input
+                    type="text"
+                    value={newTaskUrl}
+                    onChange={(e) => setNewTaskUrl(e.target.value)}
+                    placeholder="https://example.com"
+                    className="w-full bg-gray-900 border border-gray-700 rounded px-2 py-1.5 text-xs text-white focus:border-blue-500 outline-none font-mono"
+                  />
+                </div>
+                <div className="flex justify-end gap-2 pt-1">
+                  <button
+                    onClick={handleCancelAddTask}
+                    className="px-3 py-1 text-xs text-gray-400 hover:text-white hover:bg-gray-700 rounded"
+                  >
+                    取消
+                  </button>
+                  <button
+                    onClick={handleConfirmAddTask}
+                    disabled={!newTaskUrl.trim()}
+                    className="px-3 py-1 text-xs bg-blue-600 hover:bg-blue-500 disabled:bg-gray-700 disabled:text-gray-500 text-white rounded"
+                  >
+                    保存
+                  </button>
+                </div>
+              </div>
+            )}
+
             {tasks.map(task => (
               <div
                 key={task.id}
-                onClick={() => { setActiveTaskId(task.id); setActiveTab('config'); }}
-                className={`p-3 rounded border cursor-pointer transition-colors ${
+                onClick={() => { 
+                  if (editingTaskId !== task.id) {
+                    setActiveTaskId(task.id); 
+                    setActiveTab('config'); 
+                  }
+                }}
+                className={`p-3 rounded border cursor-pointer transition-colors group ${
                   activeTaskId === task.id
                     ? 'bg-gray-800 border-blue-500/50'
                     : 'bg-gray-800/30 border-gray-800 hover:bg-gray-800'
                 }`}
               >
-                <div className="text-sm font-medium text-white">{task.name}</div>
-                <div className="text-xs text-gray-500 mt-1 truncate">{task.url}</div>
+                {editingTaskId === task.id ? (
+                  // 编辑模式
+                  <div className="space-y-2" onClick={e => e.stopPropagation()}>
+                    <input
+                      type="text"
+                      value={editTaskName}
+                      onChange={(e) => setEditTaskName(e.target.value)}
+                      placeholder="任务名称"
+                      className="w-full bg-gray-900 border border-gray-700 rounded px-2 py-1 text-xs text-white focus:border-blue-500 outline-none"
+                      autoFocus
+                    />
+                    <input
+                      type="text"
+                      value={editTaskUrl}
+                      onChange={(e) => setEditTaskUrl(e.target.value)}
+                      placeholder="目标网址"
+                      className="w-full bg-gray-900 border border-gray-700 rounded px-2 py-1 text-xs text-white focus:border-blue-500 outline-none font-mono"
+                    />
+                    <div className="flex justify-end gap-1">
+                      <button
+                        onClick={handleCancelEditTask}
+                        className="p-1 text-gray-500 hover:text-white hover:bg-gray-700 rounded"
+                      >
+                        <X size={14} />
+                      </button>
+                      <button
+                        onClick={handleSaveEditTask}
+                        className="p-1 text-green-500 hover:text-white hover:bg-green-600 rounded"
+                      >
+                        <Check size={14} />
+                      </button>
+                    </div>
+                  </div>
+                ) : (
+                  // 显示模式
+                  <div className="flex items-start justify-between">
+                    <div className="flex-1 min-w-0">
+                      <div className="text-sm font-medium text-white truncate">{task.name}</div>
+                      <div className="text-xs text-gray-500 mt-1 truncate">{task.url}</div>
+                      <div className="flex items-center gap-2 mt-1.5">
+                        <span className={`text-[10px] px-1.5 py-0.5 rounded ${
+                          task.sourceType === 'dom' 
+                            ? 'bg-blue-900/50 text-blue-400' 
+                            : 'bg-yellow-900/50 text-yellow-400'
+                        }`}>
+                          {task.sourceType === 'dom' ? 'DOM' : 'JSON'}
+                        </span>
+                        <span className={`text-[10px] px-1.5 py-0.5 rounded ${
+                          task.status === 'active' 
+                            ? 'bg-green-900/50 text-green-400'
+                            : task.status === 'completed'
+                            ? 'bg-purple-900/50 text-purple-400'
+                            : 'bg-gray-700 text-gray-400'
+                        }`}>
+                          {task.status === 'active' ? '运行中' : task.status === 'completed' ? '已完成' : '待运行'}
+                        </span>
+                      </div>
+                    </div>
+                    <div className="flex items-center gap-1 opacity-0 group-hover:opacity-100 transition-opacity ml-2">
+                      <button
+                        onClick={(e) => handleStartEditTask(task, e)}
+                        className="p-1 text-gray-500 hover:text-blue-400 hover:bg-gray-700 rounded"
+                        title="编辑"
+                      >
+                        <Edit2 size={12} />
+                      </button>
+                      {tasks.length > 1 && (
+                        <button
+                          onClick={(e) => handleDeleteTask(task.id, e)}
+                          className="p-1 text-gray-500 hover:text-red-400 hover:bg-gray-700 rounded"
+                          title="删除"
+                        >
+                          <Trash2 size={12} />
+                        </button>
+                      )}
+                    </div>
+                  </div>
+                )}
               </div>
             ))}
+
+            {tasks.length === 0 && !isCreating && (
+              <div className="text-center py-8 text-gray-600 text-xs border border-dashed border-gray-800 rounded">
+                暂无任务，点击 + 新建
+              </div>
+            )}
           </div>
         )}
 

@@ -5,6 +5,7 @@
   "description": "轻量可视化通用Web数据采集插件",
   "permissions": [
     "activeTab",
+    "tabs",
     "scripting",
     "storage",
     "sidePanel"
