@@ -1,7 +1,14 @@
 import React, { useState, useEffect, useCallback } from 'react';
-import { Command, Layers, Settings, Play, Trash2, Plus, MousePointer2, Ban, ArrowDownToLine, MousePointerClick, Power, PowerOff, Code, Braces, ChevronRight, ChevronDown } from 'lucide-react';
+import { Command, Layers, Settings, Play, Trash2, Plus, MousePointer2, Ban, ArrowDownToLine, MousePointerClick, Power, PowerOff, Code, Braces, ChevronRight, ChevronDown, Globe, RefreshCw } from 'lucide-react';
 import type { Task, SelectorRule, CollectedData, PaginationType } from '../types';
 import { getDomain } from '../utils/urlUtils';
+
+interface NetworkRequest {
+  id: string;
+  method: string;
+  url: string;
+  status?: number;
+}
 
 // JSON 树形查看器组件
 const JsonNode: React.FC<{
@@ -85,6 +92,8 @@ const App: React.FC = () => {
   const [currentUrl, setCurrentUrl] = useState('');
   const [previewData, setPreviewData] = useState<CollectedData[]>([]);
   const [interceptedJson, setInterceptedJson] = useState<any>(null);
+  const [networkRequests, setNetworkRequests] = useState<NetworkRequest[]>([]);
+  const [selectedRequestId, setSelectedRequestId] = useState<string | null>(null);
 
   const activeTask = tasks.find(t => t.id === activeTaskId);
 
@@ -134,6 +143,14 @@ const App: React.FC = () => {
         setPreviewData(message.data);
       } else if (message.type === 'JSON_INTERCEPTED') {
         setInterceptedJson(message.data);
+        if (message.request) {
+          setNetworkRequests(prev => {
+            // 避免重复
+            if (prev.some(r => r.id === message.request.id)) return prev;
+            return [...prev, message.request];
+          });
+          setSelectedRequestId(message.request.id);
+        }
       }
     };
 
@@ -199,7 +216,17 @@ const App: React.FC = () => {
     handleUpdateTaskConfig({ sourceType: type });
     if (type === 'dom') {
       setInterceptedJson(null);
+      setNetworkRequests([]);
     }
+  };
+
+  // 设置拦截 URL
+  const handleSetInterceptUrl = (url: string) => {
+    handleUpdateTaskConfig({ interceptUrl: url });
+    chrome.runtime.sendMessage({
+      type: 'SET_INTERCEPT_URL',
+      url
+    });
   };
 
   const handleRemoveRule = (id: string) => {
@@ -231,18 +258,6 @@ const App: React.FC = () => {
       config: activeTask
     });
     handleUpdateTaskConfig({ status: 'active' });
-  };
-
-  // 模拟 JSON 数据（实际应从网络拦截获取）
-  const mockJsonData = interceptedJson || {
-    status: "success",
-    data: {
-      total: 4,
-      items: [
-        { id: 101, name: "Widget A", price: 19.99, stock: true },
-        { id: 102, name: "Widget B", price: 39.99, stock: false }
-      ]
-    }
   };
 
   return (
@@ -409,29 +424,99 @@ const App: React.FC = () => {
             {/* JSON 模式 */}
             {activeTask.sourceType === 'json' && (
               <div className="flex flex-col flex-1 min-h-0">
-                <div className="px-3 py-2 text-xs text-yellow-300 bg-yellow-900/20 border-b border-gray-800 shrink-0">
-                  <Braces size={12} className="inline mr-1" />
-                  点击 JSON 节点选择要采集的字段
+                {/* 拦截 URL 设置 */}
+                <div className="p-3 border-b border-gray-800 shrink-0">
+                  <label className="text-[10px] text-gray-500 uppercase font-semibold block mb-1">
+                    拦截 URL（支持 * 通配符）
+                  </label>
+                  <input
+                    type="text"
+                    value={activeTask.interceptUrl || ''}
+                    onChange={(e) => handleSetInterceptUrl(e.target.value)}
+                    placeholder="/api/products 或 *.json"
+                    className="w-full bg-gray-800 border border-gray-700 rounded px-2 py-1.5 text-xs text-yellow-400 font-mono focus:border-yellow-500 outline-none"
+                  />
+                  <p className="text-[10px] text-gray-600 mt-1">
+                    设置后刷新页面，匹配的请求会被拦截
+                  </p>
                 </div>
 
-                <div className="flex-1 overflow-y-auto p-2 min-h-0">
-                  <div className="bg-gray-950 p-2 rounded border border-gray-800 h-full overflow-auto">
-                    <JsonNode name="root" value={mockJsonData} path="" onSelect={handleAddJsonRule} />
-                  </div>
+                <div className="px-3 py-2 text-xs text-yellow-300 bg-yellow-900/20 border-b border-gray-800 shrink-0 flex items-center justify-between">
+                  <span>
+                    <Globe size={12} className="inline mr-1" />
+                    已拦截 {networkRequests.length} 个请求
+                  </span>
+                  <button
+                    onClick={() => { setNetworkRequests([]); setInterceptedJson(null); }}
+                    className="text-gray-500 hover:text-white"
+                    title="清空"
+                  >
+                    <RefreshCw size={12} />
+                  </button>
                 </div>
 
-                {rules.length > 0 && (
-                  <div className="border-t border-gray-800 p-2 max-h-32 overflow-y-auto shrink-0">
-                    <div className="text-[10px] text-gray-500 uppercase font-semibold mb-1">已选字段</div>
-                    {rules.map(rule => (
-                      <div key={rule.id} className="flex justify-between items-center text-[10px] bg-gray-800 p-1.5 mb-1 rounded">
-                        <span className="text-green-400 font-mono">{rule.fieldName}</span>
-                        <span className="text-gray-500 truncate flex-1 mx-2">{rule.selector}</span>
-                        <button onClick={() => handleRemoveRule(rule.id)} className="text-gray-600 hover:text-red-400">
-                          <Trash2 size={10} />
-                        </button>
+                {/* 网络请求列表 */}
+                {networkRequests.length > 0 && (
+                  <div className="border-b border-gray-800 max-h-28 overflow-y-auto shrink-0">
+                    {networkRequests.map(req => (
+                      <div
+                        key={req.id}
+                        onClick={() => setSelectedRequestId(req.id)}
+                        className={`px-3 py-1.5 text-[10px] cursor-pointer border-b border-gray-800/50 ${
+                          selectedRequestId === req.id
+                            ? 'bg-blue-900/30 border-l-2 border-l-blue-500'
+                            : 'hover:bg-gray-800'
+                        }`}
+                      >
+                        <span className={`font-bold mr-2 ${req.method === 'GET' ? 'text-green-400' : 'text-yellow-400'}`}>
+                          {req.method}
+                        </span>
+                        <span className="text-gray-400 truncate">{req.url.split('/').pop()?.split('?')[0] || req.url}</span>
                       </div>
                     ))}
+                  </div>
+                )}
+
+                {/* JSON 查看器 */}
+                {interceptedJson ? (
+                  <>
+                    <div className="flex-1 overflow-y-auto p-2 min-h-0">
+                      <div className="bg-gray-950 p-2 rounded border border-gray-800 h-full overflow-auto">
+                        <JsonNode name="root" value={interceptedJson} path="" onSelect={handleAddJsonRule} />
+                      </div>
+                    </div>
+
+                    {rules.length > 0 && (
+                      <div className="border-t border-gray-800 p-2 max-h-32 overflow-y-auto shrink-0">
+                        <div className="text-[10px] text-gray-500 uppercase font-semibold mb-1">已选字段</div>
+                        {rules.map(rule => (
+                          <div key={rule.id} className="flex justify-between items-center text-[10px] bg-gray-800 p-1.5 mb-1 rounded">
+                            <span className="text-green-400 font-mono">{rule.fieldName}</span>
+                            <span className="text-gray-500 truncate flex-1 mx-2">{rule.selector}</span>
+                            <button onClick={() => handleRemoveRule(rule.id)} className="text-gray-600 hover:text-red-400">
+                              <Trash2 size={10} />
+                            </button>
+                          </div>
+                        ))}
+                      </div>
+                    )}
+                  </>
+                ) : (
+                  <div className="flex-1 flex items-center justify-center text-gray-600 text-xs">
+                    <div className="text-center">
+                      <Globe size={24} className="mx-auto mb-2 opacity-50" />
+                      {activeTask.interceptUrl ? (
+                        <>
+                          <p>等待匹配的请求...</p>
+                          <p className="text-[10px] mt-1">刷新页面触发网络请求</p>
+                        </>
+                      ) : (
+                        <>
+                          <p>请先设置拦截 URL</p>
+                          <p className="text-[10px] mt-1">例如: /api/list 或 *.json</p>
+                        </>
+                      )}
+                    </div>
                   </div>
                 )}
               </div>
