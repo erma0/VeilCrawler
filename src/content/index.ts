@@ -21,130 +21,63 @@ interface InterceptedRequest {
 
 const interceptedRequests: InterceptedRequest[] = [];
 
-// 检查 URL 是否匹配拦截模式
-const shouldIntercept = (url: string): boolean => {
-  if (!interceptUrlPattern) return false;
-  
-  // 支持简单的通配符匹配
-  // 例如: /api/products 会匹配包含该路径的 URL
-  // 例如: *.json 会匹配以 .json 结尾的 URL
-  try {
-    if (interceptUrlPattern.includes('*')) {
-      const regex = new RegExp(interceptUrlPattern.replace(/\*/g, '.*'), 'i');
-      return regex.test(url);
-    }
-    return url.toLowerCase().includes(interceptUrlPattern.toLowerCase());
-  } catch {
-    return url.toLowerCase().includes(interceptUrlPattern.toLowerCase());
-  }
-};
-
-// 拦截 XHR
-const originalXHROpen = XMLHttpRequest.prototype.open;
-const originalXHRSend = XMLHttpRequest.prototype.send;
-
-XMLHttpRequest.prototype.open = function(method: string, url: string | URL, ...args: any[]) {
-  (this as any)._veilMethod = method;
-  (this as any)._veilUrl = url.toString();
-  return originalXHROpen.apply(this, [method, url, ...args] as any);
-};
-
-XMLHttpRequest.prototype.send = function(body?: any) {
-  const xhr = this;
-  const url = (xhr as any)._veilUrl || '';
-  
-  // 只有匹配拦截模式才处理
-  if (shouldIntercept(url)) {
-    const id = Date.now().toString() + Math.random().toString(36).slice(2);
-    
-    xhr.addEventListener('load', function() {
-      try {
-        const contentType = xhr.getResponseHeader('content-type') || '';
-        if (contentType.includes('application/json') || url.endsWith('.json')) {
-          const responseData = JSON.parse(xhr.responseText);
-          const request: InterceptedRequest = {
-            id,
-            method: (xhr as any)._veilMethod || 'GET',
-            url,
-            type: 'xhr',
-            status: xhr.status,
-            responseData,
-            timestamp: Date.now()
-          };
-          interceptedRequests.push(request);
-          
-          chrome.runtime.sendMessage({
-            type: 'JSON_INTERCEPTED',
-            data: responseData,
-            request: {
-              id: request.id,
-              method: request.method,
-              url: request.url,
-              status: request.status
-            }
-          }).catch(() => {});
-          
-          console.log('VeilCrawler XHR intercepted:', url);
-        }
-      } catch (e) {
-        // 忽略解析错误
-      }
-    });
-  }
-  
-  return originalXHRSend.apply(this, [body] as any);
-};
-
-// 拦截 Fetch
-const originalFetch = window.fetch;
-
-window.fetch = async function(input: RequestInfo | URL, init?: RequestInit) {
-  const response = await originalFetch.apply(this, [input, init]);
-  
-  const url = typeof input === 'string' ? input : input instanceof URL ? input.toString() : input.url;
-  
-  // 只有匹配拦截模式才处理
-  if (shouldIntercept(url)) {
-    try {
-      const method = init?.method || 'GET';
-      const contentType = response.headers.get('content-type') || '';
+// 初始化网络拦截（通过外部脚本注入到页面上下文）
+const initNetworkInterceptor = () => {
+  // 监听来自注入脚本的消息
+  window.addEventListener('message', (event) => {
+    if (event.source !== window) return;
+    if (event.data?.type === 'VEIL_CRAWLER_INTERCEPTED') {
+      const { id, method, url, status, responseData } = event.data;
       
-      if (contentType.includes('application/json') || url.endsWith('.json')) {
-        const clonedResponse = response.clone();
-        const responseData = await clonedResponse.json();
-        
-        const id = Date.now().toString() + Math.random().toString(36).slice(2);
-        const request: InterceptedRequest = {
-          id,
-          method,
-          url,
-          type: 'fetch',
-          status: response.status,
-          responseData,
-          timestamp: Date.now()
-        };
-        interceptedRequests.push(request);
-        
-        chrome.runtime.sendMessage({
-          type: 'JSON_INTERCEPTED',
-          data: responseData,
-          request: {
-            id: request.id,
-            method: request.method,
-            url: request.url,
-            status: request.status
-          }
-        }).catch(() => {});
-        
-        console.log('VeilCrawler Fetch intercepted:', url);
-      }
-    } catch (e) {
-      // 忽略错误
+      const request: InterceptedRequest = {
+        id,
+        method,
+        url,
+        type: 'fetch',
+        status,
+        responseData,
+        timestamp: Date.now()
+      };
+      interceptedRequests.push(request);
+      
+      chrome.runtime.sendMessage({
+        type: 'JSON_INTERCEPTED',
+        data: responseData,
+        request: {
+          id: request.id,
+          method: request.method,
+          url: request.url,
+          status: request.status
+        }
+      }).catch(() => {});
+      
+      console.log('VeilCrawler intercepted:', url);
     }
-  }
-  
-  return response;
+  });
+
+  // 使用外部脚本文件注入，避免 CSP 问题
+  const script = document.createElement('script');
+  script.src = chrome.runtime.getURL('interceptor.js');
+  script.onload = () => script.remove();
+  (document.head || document.documentElement).appendChild(script);
 };
+
+// 设置拦截 URL 模式
+const setInterceptPattern = (pattern: string) => {
+  interceptUrlPattern = pattern;
+  // 通知注入的脚本更新模式
+  window.postMessage({
+    type: 'VEIL_CRAWLER_SET_PATTERN',
+    pattern
+  }, '*');
+};
+
+// 初始化拦截器
+try {
+  initNetworkInterceptor();
+} catch (e) {
+  console.warn('VeilCrawler: 网络拦截器初始化失败', e);
+}
 
 // ============ 元素选择功能 ============
 
@@ -608,8 +541,7 @@ chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
       break;
       
     case 'SET_INTERCEPT_URL':
-      interceptUrlPattern = message.url || '';
-      console.log('VeilCrawler: 拦截 URL 设置为:', interceptUrlPattern);
+      setInterceptPattern(message.url || '');
       // 清空之前的拦截记录
       interceptedRequests.length = 0;
       break;

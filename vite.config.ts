@@ -73,11 +73,13 @@ export default defineConfig({
         popup: resolve(__dirname, 'src/popup/index.html'),
         content: resolve(__dirname, 'src/content/index.ts'),
         background: resolve(__dirname, 'src/background/index.ts'),
+        interceptor: resolve(__dirname, 'src/injected/interceptor.ts'),
       },
       output: {
         entryFileNames: (chunk) => {
           if (chunk.name === 'content') return 'content.js';
           if (chunk.name === 'background') return 'background.js';
+          if (chunk.name === 'interceptor') return 'interceptor.js';
           return 'popup.js';
         },
         chunkFileNames: '[name].js',

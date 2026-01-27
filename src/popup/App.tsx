@@ -254,8 +254,7 @@ const App: React.FC = () => {
           chrome.runtime.sendMessage({ type: 'STOP_SELECTING' });
         } else {
           setRules(prev => {
-            if (prev.some(r => r.selector === selector)) return prev;
-
+            // 允许同一选择器添加多次以获取不同属性
             const newRule: SelectorRule = {
               id: Date.now().toString(),
               type: 'dom',
