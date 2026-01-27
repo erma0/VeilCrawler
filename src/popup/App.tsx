@@ -136,10 +136,32 @@ const App: React.FC = () => {
 
   // 从 storage 加载任务
   useEffect(() => {
-    chrome.storage.local.get(['tasks', 'activeTaskId'], (result) => {
+    chrome.storage.local.get(['tasks', 'activeTaskId', '_collectState'], (result) => {
       if (result.tasks && result.tasks.length > 0) {
-        setTasks(result.tasks);
-        setActiveTaskId(result.activeTaskId || result.tasks[0].id);
+        // 检查是否有正在进行的采集
+        const collectState = result._collectState;
+        const hasActiveCollect = collectState && collectState.isRunning && 
+          (Date.now() - collectState.startTime < 5 * 60 * 1000); // 5分钟内有效
+        
+        // 重置所有 active 状态的任务为 idle（除非真的在采集中）
+        const tasks = result.tasks.map((t: Task) => {
+          if (t.status === 'active') {
+            // 只有当前正在采集的任务保持 active
+            if (hasActiveCollect && t.id === collectState.taskId) {
+              return t;
+            }
+            return { ...t, status: 'idle' as const };
+          }
+          return t;
+        });
+        
+        setTasks(tasks);
+        setActiveTaskId(result.activeTaskId || tasks[0].id);
+        
+        // 如果没有有效的采集状态，清理它
+        if (!hasActiveCollect && result._collectState) {
+          chrome.storage.local.remove(['_collectState']);
+        }
       }
     });
   }, []);
