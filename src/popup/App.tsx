@@ -1,7 +1,6 @@
 import React, { useState, useEffect, useCallback } from 'react';
-import { Command, Layers, Settings, Play, Trash2, Plus, MousePointer2, Ban, ArrowDownToLine, MousePointerClick, Power, PowerOff, Code, Braces, ChevronRight, ChevronDown, Globe, RefreshCw, Edit2, Check, X, Download, FileJson, FileSpreadsheet, Copy, StopCircle } from 'lucide-react';
+import { Command, Layers, Settings, Play, Trash2, Plus, MousePointer2, Ban, ArrowDownToLine, MousePointerClick, Power, PowerOff, Code, Braces, ChevronRight, ChevronDown, Globe, RefreshCw, Edit2, Check, X, FileJson, FileSpreadsheet, Copy, StopCircle } from 'lucide-react';
 import type { Task, SelectorRule, CollectedData, PaginationType } from '../types';
-import { getDomain } from '../utils/urlUtils';
 import { getDomain } from '../utils/urlUtils';
 
 interface NetworkRequest {
@@ -227,6 +226,18 @@ const App: React.FC = () => {
     };
   }, []);
 
+  // 使用 ref 保存最新的状态，避免闭包问题
+  const selectingModeRef = React.useRef(selectingMode);
+  const activeTaskIdRef = React.useRef(activeTaskId);
+  
+  useEffect(() => {
+    selectingModeRef.current = selectingMode;
+  }, [selectingMode]);
+  
+  useEffect(() => {
+    activeTaskIdRef.current = activeTaskId;
+  }, [activeTaskId]);
+
   // 监听来自 content script 的消息
   useEffect(() => {
     const handleMessage = (message: any) => {
@@ -236,7 +247,7 @@ const App: React.FC = () => {
         const { selector, text } = message.data;
         
         // 判断是选择元素还是选择下一页按钮
-        if (selectingMode === 'nextPage') {
+        if (selectingModeRef.current === 'nextPage') {
           handleUpdateTaskConfig({ nextPageSelector: selector });
           setSelectingMode(null);
           setIsSelecting(false);
@@ -263,13 +274,13 @@ const App: React.FC = () => {
         // 采集完成
         setCollectedData(message.data);
         setTasks(prev => prev.map(t =>
-          t.id === activeTaskId ? { ...t, status: 'completed' as const, count: message.data.length } : t
+          t.id === activeTaskIdRef.current ? { ...t, status: 'completed' as const, count: message.data.length } : t
         ));
       } else if (message.type === 'COLLECT_PROGRESS') {
         // 采集进度更新
         setCollectedData(message.data);
         setTasks(prev => prev.map(t =>
-          t.id === activeTaskId ? { ...t, count: message.data.length } : t
+          t.id === activeTaskIdRef.current ? { ...t, count: message.data.length } : t
         ));
       } else if (message.type === 'JSON_INTERCEPTED') {
         setInterceptedJson(message.data);
@@ -382,13 +393,13 @@ const App: React.FC = () => {
     const remaining = tasks.filter(t => t.id !== taskId);
     setTasks(remaining);
     
-    if (activeTaskId === taskId) {
-      if (remaining.length > 0) {
-        setActiveTaskId(remaining[0].id);
-      } else {
-        setActiveTaskId(null);
-        setRules([]);
-      }
+    if (remaining.length === 0) {
+      // 清空 storage 中的任务数据
+      chrome.storage.local.remove(['tasks', 'activeTaskId']);
+      setActiveTaskId(null);
+      setRules([]);
+    } else if (activeTaskId === taskId) {
+      setActiveTaskId(remaining[0].id);
     }
   };
 
@@ -405,9 +416,14 @@ const App: React.FC = () => {
     e.stopPropagation();
     if (!editingTaskId || !editTaskUrl.trim()) return;
     
+    // 检查名称是否与其他任务重复
+    const newName = editTaskName.trim() || getDomain(editTaskUrl);
+    const isDuplicate = tasks.some(t => t.id !== editingTaskId && t.name === newName);
+    const finalName = isDuplicate ? generateTaskName(newName) : newName;
+    
     setTasks(prev => prev.map(t => 
       t.id === editingTaskId 
-        ? { ...t, name: editTaskName.trim() || getDomain(editTaskUrl), url: editTaskUrl.trim() }
+        ? { ...t, name: finalName, url: editTaskUrl.trim() }
         : t
     ));
     setEditingTaskId(null);

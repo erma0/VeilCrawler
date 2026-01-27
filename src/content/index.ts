@@ -299,7 +299,140 @@ const stopSelecting = () => {
 let isRunning = false;
 let stopRequested = false;
 
+// 从 JSON 数据中根据路径提取值
+const extractJsonValue = (data: any, path: string): any[] => {
+  // 处理通配符路径，如 "data[*].name"
+  const parts = path.split(/\.|\[|\]/).filter(p => p !== '');
+  
+  const extract = (obj: any, pathParts: string[]): any[] => {
+    if (pathParts.length === 0) return [obj];
+    
+    const [current, ...rest] = pathParts;
+    
+    if (current === '*') {
+      // 通配符，遍历数组
+      if (Array.isArray(obj)) {
+        return obj.flatMap(item => extract(item, rest));
+      }
+      return [];
+    }
+    
+    if (obj && typeof obj === 'object' && current in obj) {
+      return extract(obj[current], rest);
+    }
+    
+    return [];
+  };
+  
+  return extract(data, parts);
+};
+
+// JSON 数据采集
+const runJsonCollectTask = async (rules: SelectorRule[], jsonData: any) => {
+  isRunning = true;
+  stopRequested = false;
+  
+  // 找到数组数据的根路径
+  let dataArray: any[] = [];
+  
+  // 尝试从第一个规则推断数据数组
+  if (rules.length > 0) {
+    const firstPath = rules[0].selector;
+    // 找到 [*] 之前的路径作为数组根
+    const arrayMatch = firstPath.match(/^(.+?)\[\*\]/);
+    if (arrayMatch) {
+      const arrayPath = arrayMatch[1];
+      const pathParts = arrayPath.split('.').filter(p => p !== '');
+      let current = jsonData;
+      for (const part of pathParts) {
+        if (current && typeof current === 'object' && part in current) {
+          current = current[part];
+        } else {
+          current = null;
+          break;
+        }
+      }
+      if (Array.isArray(current)) {
+        dataArray = current;
+      }
+    }
+  }
+  
+  // 如果没找到数组，尝试直接使用 jsonData
+  if (dataArray.length === 0 && Array.isArray(jsonData)) {
+    dataArray = jsonData;
+  }
+  
+  // 如果还是没有，尝试找第一个数组属性
+  if (dataArray.length === 0 && typeof jsonData === 'object') {
+    for (const key of Object.keys(jsonData)) {
+      if (Array.isArray(jsonData[key])) {
+        dataArray = jsonData[key];
+        break;
+      }
+    }
+  }
+  
+  const allData: Record<string, string>[] = [];
+  
+  // 遍历数组提取数据
+  for (const item of dataArray) {
+    if (stopRequested) break;
+    
+    const row: Record<string, string> = {};
+    for (const rule of rules) {
+      // 获取相对路径（去掉数组根路径）
+      let relativePath = rule.selector;
+      const arrayMatch = rule.selector.match(/\[\*\]\.?(.*)$/);
+      if (arrayMatch) {
+        relativePath = arrayMatch[1];
+      }
+      
+      // 提取值
+      const pathParts = relativePath.split('.').filter(p => p !== '');
+      let value: any = item;
+      for (const part of pathParts) {
+        if (value && typeof value === 'object' && part in value) {
+          value = value[part];
+        } else {
+          value = '';
+          break;
+        }
+      }
+      
+      row[rule.fieldName] = typeof value === 'object' ? JSON.stringify(value) : String(value ?? '');
+    }
+    allData.push(row);
+  }
+  
+  isRunning = false;
+  
+  // 发送结果
+  chrome.runtime.sendMessage({
+    type: 'COLLECT_RESULT',
+    data: allData
+  }).catch(() => {});
+  
+  console.log('VeilCrawler JSON 采集完成:', allData.length, '条数据');
+};
+
 const runCollectTask = async (rules: SelectorRule[], config: any) => {
+  // 判断是 DOM 还是 JSON 采集
+  if (config.sourceType === 'json') {
+    // JSON 采集需要从拦截的数据中获取
+    const latestRequest = interceptedRequests[interceptedRequests.length - 1];
+    if (latestRequest?.responseData) {
+      await runJsonCollectTask(rules, latestRequest.responseData);
+    } else {
+      chrome.runtime.sendMessage({
+        type: 'COLLECT_RESULT',
+        data: []
+      }).catch(() => {});
+    }
+    return;
+  }
+  
+  // DOM 采集逻辑
   isRunning = true;
   stopRequested = false;
   
