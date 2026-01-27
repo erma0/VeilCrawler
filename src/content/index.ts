@@ -294,6 +294,154 @@ const stopSelecting = () => {
   console.log('VeilCrawler: 选择模式已停止');
 };
 
+// ============ 采集任务 ============
+
+let isRunning = false;
+let stopRequested = false;
+
+const runCollectTask = async (rules: SelectorRule[], config: any) => {
+  isRunning = true;
+  stopRequested = false;
+  
+  const allData: Record<string, string>[] = [];
+  const maxItems = config.maxItems || 0; // 0 表示不限制
+  let noNewDataCount = 0; // 连续无新数据计数
+  
+  // 采集当前页面数据
+  const collectCurrentPage = () => {
+    const columns = rules.map(rule => {
+      let elements: NodeListOf<HTMLElement>;
+      try {
+        elements = document.querySelectorAll(rule.selector);
+      } catch {
+        return { field: rule.fieldName, values: [] as string[] };
+      }
+
+      const values = Array.from(elements).map(el => {
+        if (rule.attribute === 'href') return (el as HTMLAnchorElement).href || '';
+        if (rule.attribute === 'src') return (el as HTMLImageElement).src || '';
+        if (rule.attribute === 'innerHTML') return el.innerHTML;
+        return el.innerText || '';
+      });
+
+      return { field: rule.fieldName, values };
+    });
+
+    const maxRows = Math.max(...columns.map(c => c.values.length), 0);
+    const rows: Record<string, string>[] = [];
+
+    for (let i = 0; i < maxRows; i++) {
+      const row: Record<string, string> = {};
+      columns.forEach(col => {
+        row[col.field] = col.values[i] || '';
+      });
+      rows.push(row);
+    }
+
+    return rows;
+  };
+
+  // 滚动翻页
+  const scrollToLoadMore = async () => {
+    const previousHeight = document.body.scrollHeight;
+    window.scrollTo(0, document.body.scrollHeight);
+    await new Promise(r => setTimeout(r, 1500));
+    return document.body.scrollHeight > previousHeight;
+  };
+
+  // 点击翻页
+  const clickNextPage = async (selector: string) => {
+    try {
+      const btn = document.querySelector(selector) as HTMLElement;
+      if (btn) {
+        // 检查按钮是否可点击
+        const isDisabled = btn.hasAttribute('disabled') || 
+                          btn.classList.contains('disabled') ||
+                          btn.getAttribute('aria-disabled') === 'true' ||
+                          (btn as HTMLButtonElement).disabled;
+        if (isDisabled) return false;
+        
+        btn.click();
+        await new Promise(r => setTimeout(r, 2000));
+        return true;
+      }
+    } catch {}
+    return false;
+  };
+
+  // 采集逻辑
+  do {
+    if (stopRequested) break;
+
+    const previousCount = allData.length;
+    const pageData = collectCurrentPage();
+    
+    // 去重添加
+    pageData.forEach(row => {
+      // 检查是否达到数量限制
+      if (maxItems > 0 && allData.length >= maxItems) return;
+      
+      const key = JSON.stringify(row);
+      if (!allData.some(d => JSON.stringify(d) === key)) {
+        allData.push(row);
+      }
+    });
+
+    // 发送进度
+    chrome.runtime.sendMessage({
+      type: 'COLLECT_PROGRESS',
+      data: allData
+    }).catch(() => {});
+
+    // 检查是否有新数据
+    if (allData.length === previousCount) {
+      noNewDataCount++;
+    } else {
+      noNewDataCount = 0;
+    }
+
+    // 检查是否达到数量限制
+    if (maxItems > 0 && allData.length >= maxItems) {
+      console.log('VeilCrawler: 已达到设定的采集数量限制');
+      break;
+    }
+
+    // 连续3次无新数据则停止
+    if (noNewDataCount >= 3) {
+      console.log('VeilCrawler: 连续无新数据，采集完成');
+      break;
+    }
+
+    // 翻页处理
+    if (config.paginationType === 'scroll') {
+      const hasMore = await scrollToLoadMore();
+      if (!hasMore) {
+        console.log('VeilCrawler: 滚动到底，无更多数据');
+        break;
+      }
+    } else if (config.paginationType === 'click' && config.nextPageSelector) {
+      const hasNext = await clickNextPage(config.nextPageSelector);
+      if (!hasNext) {
+        console.log('VeilCrawler: 下一页按钮不可用，采集完成');
+        break;
+      }
+    } else {
+      break; // 无翻页模式，只采集当前页
+    }
+
+  } while (!stopRequested);
+
+  isRunning = false;
+
+  // 发送最终结果
+  chrome.runtime.sendMessage({
+    type: 'COLLECT_RESULT',
+    data: allData
+  }).catch(() => {});
+
+  console.log('VeilCrawler 采集完成:', allData.length, '条数据');
+};
+
 // ============ 消息监听 ============
 
 chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
@@ -317,8 +465,13 @@ chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
       break;
 
     case 'RUN_TASK':
-      const result = extractPreviewData(message.rules);
-      console.log('VeilCrawler 采集结果:', result);
+      if (!isRunning) {
+        runCollectTask(message.rules, message.config);
+      }
+      break;
+      
+    case 'STOP_TASK':
+      stopRequested = true;
       break;
       
     case 'SET_INTERCEPT_URL':

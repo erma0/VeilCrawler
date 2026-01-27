@@ -1,6 +1,7 @@
 import React, { useState, useEffect, useCallback } from 'react';
-import { Command, Layers, Settings, Play, Trash2, Plus, MousePointer2, Ban, ArrowDownToLine, MousePointerClick, Power, PowerOff, Code, Braces, ChevronRight, ChevronDown, Globe, RefreshCw, Edit2, Check, X, MoreVertical } from 'lucide-react';
+import { Command, Layers, Settings, Play, Trash2, Plus, MousePointer2, Ban, ArrowDownToLine, MousePointerClick, Power, PowerOff, Code, Braces, ChevronRight, ChevronDown, Globe, RefreshCw, Edit2, Check, X, Download, FileJson, FileSpreadsheet, Copy, StopCircle } from 'lucide-react';
 import type { Task, SelectorRule, CollectedData, PaginationType } from '../types';
+import { getDomain } from '../utils/urlUtils';
 import { getDomain } from '../utils/urlUtils';
 
 interface NetworkRequest {
@@ -91,6 +92,7 @@ const App: React.FC = () => {
   const [isSelecting, setIsSelecting] = useState(false);
   const [currentUrl, setCurrentUrl] = useState('');
   const [previewData, setPreviewData] = useState<CollectedData[]>([]);
+  const [collectedData, setCollectedData] = useState<CollectedData[]>([]);
   const [interceptedJson, setInterceptedJson] = useState<any>(null);
   const [networkRequests, setNetworkRequests] = useState<NetworkRequest[]>([]);
   const [selectedRequestId, setSelectedRequestId] = useState<string | null>(null);
@@ -104,6 +106,31 @@ const App: React.FC = () => {
   const [editingTaskId, setEditingTaskId] = useState<string | null>(null);
   const [editTaskName, setEditTaskName] = useState('');
   const [editTaskUrl, setEditTaskUrl] = useState('');
+
+  // 获取任务的规则数量
+  const [taskRuleCounts, setTaskRuleCounts] = useState<Record<string, number>>({});
+
+  // 加载所有任务的规则数量
+  useEffect(() => {
+    if (tasks.length > 0) {
+      const keys = tasks.map(t => `rules_${t.id}`);
+      chrome.storage.local.get(keys, (result) => {
+        const counts: Record<string, number> = {};
+        tasks.forEach(t => {
+          const rules = result[`rules_${t.id}`] || [];
+          counts[t.id] = rules.length;
+        });
+        setTaskRuleCounts(counts);
+      });
+    }
+  }, [tasks]);
+
+  // 更新当前任务的规则数量
+  useEffect(() => {
+    if (activeTaskId) {
+      setTaskRuleCounts(prev => ({ ...prev, [activeTaskId]: rules.length }));
+    }
+  }, [rules.length, activeTaskId]);
 
   const activeTask = tasks.find(t => t.id === activeTaskId);
 
@@ -222,6 +249,18 @@ const App: React.FC = () => {
         setActiveTab('config');
       } else if (message.type === 'PREVIEW_DATA') {
         setPreviewData(message.data);
+      } else if (message.type === 'COLLECT_RESULT') {
+        // 采集完成
+        setCollectedData(message.data);
+        setTasks(prev => prev.map(t =>
+          t.id === activeTaskId ? { ...t, status: 'completed' as const, count: message.data.length } : t
+        ));
+      } else if (message.type === 'COLLECT_PROGRESS') {
+        // 采集进度更新
+        setCollectedData(message.data);
+        setTasks(prev => prev.map(t =>
+          t.id === activeTaskId ? { ...t, count: message.data.length } : t
+        ));
       } else if (message.type === 'JSON_INTERCEPTED') {
         setInterceptedJson(message.data);
         if (message.request) {
@@ -391,12 +430,75 @@ const App: React.FC = () => {
   const handleRunTask = () => {
     if (!activeTask || rules.length === 0) return;
 
+    // 设置为运行中
+    handleUpdateTaskConfig({ status: 'active' });
+    setCollectedData([]);
+
     chrome.runtime.sendMessage({
       type: 'RUN_TASK',
       rules,
       config: activeTask
     });
-    handleUpdateTaskConfig({ status: 'active' });
+  };
+
+  // 停止任务
+  const handleStopTask = () => {
+    chrome.runtime.sendMessage({ type: 'STOP_TASK' });
+    handleUpdateTaskConfig({ status: 'idle' });
+  };
+
+  // 重置任务状态
+  const handleResetTask = () => {
+    handleUpdateTaskConfig({ status: 'idle', count: 0 });
+    setCollectedData([]);
+  };
+
+  // 导出为 JSON
+  const handleExportJson = () => {
+    const data = collectedData.length > 0 ? collectedData : previewData;
+    if (data.length === 0) return;
+
+    const blob = new Blob([JSON.stringify(data, null, 2)], { type: 'application/json' });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = `${activeTask?.name || 'data'}_${Date.now()}.json`;
+    a.click();
+    URL.revokeObjectURL(url);
+  };
+
+  // 导出为 CSV
+  const handleExportCsv = () => {
+    const data = collectedData.length > 0 ? collectedData : previewData;
+    if (data.length === 0) return;
+
+    const headers = Object.keys(data[0]);
+    const csvRows = [
+      headers.join(','),
+      ...data.map(row =>
+        headers.map(h => {
+          const val = String(row[h] || '').replace(/"/g, '""');
+          return `"${val}"`;
+        }).join(',')
+      )
+    ];
+
+    const blob = new Blob(['\ufeff' + csvRows.join('\n')], { type: 'text/csv;charset=utf-8' });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = `${activeTask?.name || 'data'}_${Date.now()}.csv`;
+    a.click();
+    URL.revokeObjectURL(url);
+  };
+
+  // 复制到剪贴板
+  const handleCopyData = () => {
+    const data = collectedData.length > 0 ? collectedData : previewData;
+    if (data.length === 0) return;
+
+    navigator.clipboard.writeText(JSON.stringify(data, null, 2));
+    alert('已复制到剪贴板');
   };
 
   return (
@@ -573,9 +675,17 @@ const App: React.FC = () => {
                             ? 'bg-green-900/50 text-green-400'
                             : task.status === 'completed'
                             ? 'bg-purple-900/50 text-purple-400'
+                            : (taskRuleCounts[task.id] || 0) > 0
+                            ? 'bg-blue-900/50 text-blue-400'
                             : 'bg-gray-700 text-gray-400'
                         }`}>
-                          {task.status === 'active' ? '运行中' : task.status === 'completed' ? '已完成' : '待运行'}
+                          {task.status === 'active' 
+                            ? '运行中' 
+                            : task.status === 'completed' 
+                            ? `已完成 (${task.count || 0})` 
+                            : (taskRuleCounts[task.id] || 0) > 0
+                            ? `${taskRuleCounts[task.id]} 个规则`
+                            : '待配置'}
                         </span>
                       </div>
                     </div>
@@ -815,44 +925,135 @@ const App: React.FC = () => {
                   </button>
                 ))}
               </div>
+              
+              {/* 点击翻页选择器 */}
+              {activeTask.paginationType === 'click' && (
+                <div className="mt-2">
+                  <input
+                    type="text"
+                    value={activeTask.nextPageSelector || ''}
+                    onChange={(e) => handleUpdateTaskConfig({ nextPageSelector: e.target.value })}
+                    placeholder="下一页按钮选择器，如 .next-btn"
+                    className="w-full bg-gray-800 border border-gray-700 rounded px-2 py-1.5 text-xs text-white font-mono focus:border-blue-500 outline-none"
+                  />
+                </div>
+              )}
+              
+              {/* 最大采集数量 */}
+              {activeTask.paginationType !== 'none' && (
+                <div className="mt-2 flex items-center gap-2">
+                  <span className="text-[10px] text-gray-500">最大数量:</span>
+                  <input
+                    type="number"
+                    value={activeTask.maxItems || ''}
+                    onChange={(e) => handleUpdateTaskConfig({ maxItems: parseInt(e.target.value) || 0 })}
+                    placeholder="不限"
+                    className="flex-1 bg-gray-800 border border-gray-700 rounded px-2 py-1 text-xs text-white focus:border-blue-500 outline-none w-20"
+                  />
+                  <span className="text-[10px] text-gray-600">0 或留空表示不限</span>
+                </div>
+              )}
             </div>
 
-            {/* 预览 */}
-            {previewData.length > 0 && activeTask.sourceType === 'dom' && (
-              <div className="border-t border-gray-800 max-h-48 overflow-auto shrink-0">
-                <div className="px-3 py-1 bg-gray-950 text-[10px] text-gray-500 uppercase font-semibold sticky top-0">
-                  预览 ({previewData.length} 条)
+            {/* 预览/结果 */}
+            {(previewData.length > 0 || collectedData.length > 0) && activeTask.sourceType === 'dom' && (
+              <div className="border-t border-gray-800 flex flex-col shrink-0" style={{ maxHeight: '200px' }}>
+                <div className="px-3 py-1.5 bg-gray-950 flex items-center justify-between sticky top-0 shrink-0">
+                  <span className="text-[10px] text-gray-500 uppercase font-semibold">
+                    {collectedData.length > 0 ? `结果 (${collectedData.length} 条)` : `预览 (${previewData.length} 条)`}
+                  </span>
+                  <div className="flex items-center gap-1">
+                    <button
+                      onClick={handleCopyData}
+                      className="p-1 text-gray-500 hover:text-white hover:bg-gray-800 rounded"
+                      title="复制"
+                    >
+                      <Copy size={12} />
+                    </button>
+                    <button
+                      onClick={handleExportJson}
+                      className="p-1 text-gray-500 hover:text-blue-400 hover:bg-gray-800 rounded"
+                      title="导出 JSON"
+                    >
+                      <FileJson size={12} />
+                    </button>
+                    <button
+                      onClick={handleExportCsv}
+                      className="p-1 text-gray-500 hover:text-green-400 hover:bg-gray-800 rounded"
+                      title="导出 CSV"
+                    >
+                      <FileSpreadsheet size={12} />
+                    </button>
+                  </div>
                 </div>
-                <table className="w-full text-[10px]">
-                  <thead>
-                    <tr className="bg-gray-800">
-                      {Object.keys(previewData[0]).map(key => (
-                        <th key={key} className="p-1 text-left text-gray-400 font-medium">{key}</th>
-                      ))}
-                    </tr>
-                  </thead>
-                  <tbody>
-                    {previewData.map((row, i) => (
-                      <tr key={i} className="border-t border-gray-800">
-                        {Object.values(row).map((val, j) => (
-                          <td key={j} className="p-1 text-gray-500 truncate max-w-[100px]">{String(val)}</td>
+                <div className="overflow-auto flex-1">
+                  <table className="w-full text-[10px]">
+                    <thead>
+                      <tr className="bg-gray-800">
+                        {Object.keys((collectedData.length > 0 ? collectedData : previewData)[0]).map(key => (
+                          <th key={key} className="p-1 text-left text-gray-400 font-medium sticky top-0 bg-gray-800">{key}</th>
                         ))}
                       </tr>
-                    ))}
-                  </tbody>
-                </table>
+                    </thead>
+                    <tbody>
+                      {(collectedData.length > 0 ? collectedData : previewData).map((row, i) => (
+                        <tr key={i} className="border-t border-gray-800 hover:bg-gray-800/50">
+                          {Object.values(row).map((val, j) => (
+                            <td key={j} className="p-1 text-gray-500 truncate max-w-[100px]" title={String(val)}>{String(val)}</td>
+                          ))}
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                </div>
               </div>
             )}
 
             {/* 运行按钮 */}
             <div className="p-3 border-t border-gray-800 shrink-0">
-              <button
-                onClick={handleRunTask}
-                disabled={rules.length === 0}
-                className="w-full py-2 bg-green-600 hover:bg-green-500 disabled:bg-gray-700 disabled:text-gray-500 text-white rounded text-sm font-medium flex items-center justify-center gap-2 transition-colors"
-              >
-                <Play size={14} /> 运行采集
-              </button>
+              {activeTask.status === 'completed' ? (
+                <div className="space-y-2">
+                  <div className="text-center text-xs text-green-400">
+                    ✓ 已采集 {activeTask.count || collectedData.length || previewData.length} 条数据
+                  </div>
+                  <div className="flex gap-2">
+                    <button
+                      onClick={handleResetTask}
+                      className="flex-1 py-2 bg-gray-700 hover:bg-gray-600 text-white rounded text-xs font-medium transition-colors"
+                    >
+                      重新配置
+                    </button>
+                    <button
+                      onClick={handleRunTask}
+                      className="flex-1 py-2 bg-green-600 hover:bg-green-500 text-white rounded text-xs font-medium flex items-center justify-center gap-1 transition-colors"
+                    >
+                      <Play size={12} /> 再次运行
+                    </button>
+                  </div>
+                </div>
+              ) : activeTask.status === 'active' ? (
+                <div className="space-y-2">
+                  {collectedData.length > 0 && (
+                    <div className="text-center text-xs text-yellow-400">
+                      已采集 {collectedData.length} 条...
+                    </div>
+                  )}
+                  <button
+                    onClick={handleStopTask}
+                    className="w-full py-2 bg-red-600 hover:bg-red-500 text-white rounded text-sm font-medium flex items-center justify-center gap-2 transition-colors"
+                  >
+                    <StopCircle size={14} /> 停止采集
+                  </button>
+                </div>
+              ) : (
+                <button
+                  onClick={handleRunTask}
+                  disabled={rules.length === 0}
+                  className="w-full py-2 bg-green-600 hover:bg-green-500 disabled:bg-gray-700 disabled:text-gray-500 text-white rounded text-sm font-medium flex items-center justify-center gap-2 transition-colors"
+                >
+                  <Play size={14} /> 运行采集
+                </button>
+              )}
             </div>
           </div>
         )}
