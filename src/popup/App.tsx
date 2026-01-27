@@ -313,13 +313,28 @@ const App: React.FC = () => {
     setIsCreating(true);
   };
 
+  // 生成不重复的任务名称
+  const generateTaskName = (baseName: string) => {
+    const existingNames = tasks.map(t => t.name);
+    if (!existingNames.includes(baseName)) return baseName;
+    
+    let counter = 2;
+    while (existingNames.includes(`${baseName} ${counter}`)) {
+      counter++;
+    }
+    return `${baseName} ${counter}`;
+  };
+
   const handleConfirmAddTask = () => {
     if (!newTaskUrl.trim()) return;
     
     const domain = getDomain(newTaskUrl);
+    const baseName = newTaskName.trim() || `${domain} 采集`;
+    const finalName = generateTaskName(baseName);
+    
     const newTask: Task = {
       id: Date.now().toString(),
-      name: newTaskName.trim() || `${domain} 采集`,
+      name: finalName,
       status: 'idle',
       url: newTaskUrl.trim(),
       sourceType: 'dom',
@@ -342,15 +357,20 @@ const App: React.FC = () => {
   // 删除任务
   const handleDeleteTask = (taskId: string, e: React.MouseEvent) => {
     e.stopPropagation();
-    if (tasks.length <= 1) return; // 至少保留一个任务
     
     // 删除任务对应的规则
     chrome.storage.local.remove([`rules_${taskId}`]);
     
-    setTasks(prev => prev.filter(t => t.id !== taskId));
+    const remaining = tasks.filter(t => t.id !== taskId);
+    setTasks(remaining);
+    
     if (activeTaskId === taskId) {
-      const remaining = tasks.filter(t => t.id !== taskId);
-      setActiveTaskId(remaining[0]?.id || null);
+      if (remaining.length > 0) {
+        setActiveTaskId(remaining[0].id);
+      } else {
+        setActiveTaskId(null);
+        setRules([]);
+      }
     }
   };
 
@@ -697,15 +717,13 @@ const App: React.FC = () => {
                       >
                         <Edit2 size={12} />
                       </button>
-                      {tasks.length > 1 && (
-                        <button
-                          onClick={(e) => handleDeleteTask(task.id, e)}
-                          className="p-1 text-gray-500 hover:text-red-400 hover:bg-gray-700 rounded"
-                          title="删除"
-                        >
-                          <Trash2 size={12} />
-                        </button>
-                      )}
+                      <button
+                        onClick={(e) => handleDeleteTask(task.id, e)}
+                        className="p-1 text-gray-500 hover:text-red-400 hover:bg-gray-700 rounded"
+                        title="删除"
+                      >
+                        <Trash2 size={12} />
+                      </button>
                     </div>
                   </div>
                 )}
