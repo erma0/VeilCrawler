@@ -251,7 +251,13 @@ const App: React.FC = () => {
         
         // 判断是选择元素还是选择下一页按钮
         if (selectingModeRef.current === 'nextPage') {
-          handleUpdateTaskConfig({ nextPageSelector: selector });
+          // 直接更新任务配置，使用 ref 获取最新的 activeTaskId
+          const taskId = activeTaskIdRef.current;
+          if (taskId) {
+            setTasks(prev => prev.map(t =>
+              t.id === taskId ? { ...t, nextPageSelector: selector } : t
+            ));
+          }
           setSelectingMode(null);
           setIsSelecting(false);
           chrome.runtime.sendMessage({ type: 'STOP_SELECTING' });
