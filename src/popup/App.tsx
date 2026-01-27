@@ -90,6 +90,7 @@ const App: React.FC = () => {
   const [activeTaskId, setActiveTaskId] = useState<string | null>(null);
   const [rules, setRules] = useState<SelectorRule[]>([]);
   const [isSelecting, setIsSelecting] = useState(false);
+  const [selectingMode, setSelectingMode] = useState<'element' | 'nextPage' | null>(null);
   const [currentUrl, setCurrentUrl] = useState('');
   const [previewData, setPreviewData] = useState<CollectedData[]>([]);
   const [collectedData, setCollectedData] = useState<CollectedData[]>([]);
@@ -233,20 +234,29 @@ const App: React.FC = () => {
 
       if (message.type === 'ELEMENT_SELECTED') {
         const { selector, text } = message.data;
-        setRules(prev => {
-          if (prev.some(r => r.selector === selector)) return prev;
+        
+        // 判断是选择元素还是选择下一页按钮
+        if (selectingMode === 'nextPage') {
+          handleUpdateTaskConfig({ nextPageSelector: selector });
+          setSelectingMode(null);
+          setIsSelecting(false);
+          chrome.runtime.sendMessage({ type: 'STOP_SELECTING' });
+        } else {
+          setRules(prev => {
+            if (prev.some(r => r.selector === selector)) return prev;
 
-          const newRule: SelectorRule = {
-            id: Date.now().toString(),
-            type: 'dom',
-            fieldName: `field_${prev.length + 1}`,
-            selector,
-            attribute: 'innerText',
-            exampleValue: text?.slice(0, 50)
-          };
-          return [...prev, newRule];
-        });
-        setActiveTab('config');
+            const newRule: SelectorRule = {
+              id: Date.now().toString(),
+              type: 'dom',
+              fieldName: `field_${prev.length + 1}`,
+              selector,
+              attribute: 'innerText',
+              exampleValue: text?.slice(0, 50)
+            };
+            return [...prev, newRule];
+          });
+          setActiveTab('config');
+        }
       } else if (message.type === 'PREVIEW_DATA') {
         setPreviewData(message.data);
       } else if (message.type === 'COLLECT_RESULT') {
@@ -282,11 +292,19 @@ const App: React.FC = () => {
   const toggleSelecting = useCallback(() => {
     const newState = !isSelecting;
     setIsSelecting(newState);
+    setSelectingMode(newState ? 'element' : null);
 
     chrome.runtime.sendMessage({
       type: newState ? 'START_SELECTING' : 'STOP_SELECTING'
     });
   }, [isSelecting]);
+
+  // 开始选择下一页按钮
+  const startSelectNextPage = useCallback(() => {
+    setIsSelecting(true);
+    setSelectingMode('nextPage');
+    chrome.runtime.sendMessage({ type: 'START_SELECTING' });
+  }, []);
 
   // 请求预览数据
   const requestPreview = useCallback(() => {
@@ -947,13 +965,31 @@ const App: React.FC = () => {
               {/* 点击翻页选择器 */}
               {activeTask.paginationType === 'click' && (
                 <div className="mt-2">
-                  <input
-                    type="text"
-                    value={activeTask.nextPageSelector || ''}
-                    onChange={(e) => handleUpdateTaskConfig({ nextPageSelector: e.target.value })}
-                    placeholder="下一页按钮选择器，如 .next-btn"
-                    className="w-full bg-gray-800 border border-gray-700 rounded px-2 py-1.5 text-xs text-white font-mono focus:border-blue-500 outline-none"
-                  />
+                  <div className="flex items-center gap-2">
+                    <input
+                      type="text"
+                      value={activeTask.nextPageSelector || ''}
+                      onChange={(e) => handleUpdateTaskConfig({ nextPageSelector: e.target.value })}
+                      placeholder="下一页按钮选择器"
+                      className="flex-1 bg-gray-800 border border-gray-700 rounded px-2 py-1.5 text-xs text-white font-mono focus:border-blue-500 outline-none"
+                    />
+                    <button
+                      onClick={startSelectNextPage}
+                      className={`px-2 py-1.5 rounded text-xs flex items-center gap-1 transition-colors ${
+                        selectingMode === 'nextPage'
+                          ? 'bg-orange-600 text-white'
+                          : 'bg-gray-700 text-gray-300 hover:bg-gray-600'
+                      }`}
+                    >
+                      <MousePointer2 size={12} />
+                      {selectingMode === 'nextPage' ? '点击选择...' : '选取'}
+                    </button>
+                  </div>
+                  {selectingMode === 'nextPage' && (
+                    <p className="text-[10px] text-orange-400 mt-1">
+                      请在页面上点击「下一页」按钮
+                    </p>
+                  )}
                 </div>
               )}
               
