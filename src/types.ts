@@ -18,6 +18,7 @@ export interface SelectorRule {
   type: 'dom' | 'json';
   fieldName: string;
   selector: string;
+  selectorType?: 'css' | 'xpath';  // 选择器类型
   attribute?: string;
   exampleValue?: string;
 }

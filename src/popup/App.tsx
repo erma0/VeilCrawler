@@ -1,5 +1,5 @@
 import React, { useState, useEffect, useCallback } from 'react';
-import { Command, Layers, Settings, Play, Trash2, Plus, MousePointer2, Ban, ArrowDownToLine, MousePointerClick, Power, PowerOff, Code, Braces, ChevronRight, ChevronDown, Globe, RefreshCw, Edit2, Check, X, FileJson, FileSpreadsheet, Copy, StopCircle } from 'lucide-react';
+import { Layers, Settings, Play, Trash2, Plus, MousePointer2, Ban, ArrowDownToLine, MousePointerClick, Power, Code, Braces, ChevronRight, ChevronDown, Globe, RefreshCw, Edit2, Check, X, FileJson, FileSpreadsheet, Copy, StopCircle } from 'lucide-react';
 import type { Task, SelectorRule, CollectedData, PaginationType } from '../types';
 import { getDomain } from '../utils/urlUtils';
 
@@ -241,10 +241,13 @@ const App: React.FC = () => {
   // 监听来自 content script 的消息
   useEffect(() => {
     const handleMessage = (message: any) => {
+      // 只处理从 background 转发的消息（带有 _fromContentScript 标记）
+      if (!message._fromContentScript) return;
+      
       console.log('Side panel received:', message.type);
 
       if (message.type === 'ELEMENT_SELECTED') {
-        const { selector, text } = message.data;
+        const { selector, xpath, text } = message.data;
         
         // 判断是选择元素还是选择下一页按钮
         if (selectingModeRef.current === 'nextPage') {
@@ -260,9 +263,12 @@ const App: React.FC = () => {
               type: 'dom',
               fieldName: `field_${prev.length + 1}`,
               selector,
+              selectorType: 'css',
               attribute: 'innerText',
               exampleValue: text?.slice(0, 50)
             };
+            // 保存 xpath 备用
+            (newRule as any)._xpath = xpath;
             return [...prev, newRule];
           });
           setActiveTab('config');
@@ -556,27 +562,6 @@ const App: React.FC = () => {
 
   return (
     <div className="flex flex-col h-screen bg-gray-900 text-gray-300">
-      {/* Header */}
-      <div className="flex items-center justify-between px-4 py-3 bg-gray-950 border-b border-gray-800 shrink-0">
-        <div className="flex items-center gap-2">
-          <Command size={18} className="text-blue-500" />
-          <span className="font-semibold text-white">VeilCrawler</span>
-        </div>
-        {activeTask?.sourceType === 'dom' && (
-          <button
-            onClick={toggleSelecting}
-            className={`flex items-center gap-1.5 px-3 py-1.5 rounded text-xs font-medium transition-colors ${
-              isSelecting
-                ? 'bg-green-600 text-white'
-                : 'bg-gray-800 text-gray-400 hover:bg-gray-700'
-            }`}
-          >
-            {isSelecting ? <Power size={12} /> : <PowerOff size={12} />}
-            {isSelecting ? '采集中' : '开始采集'}
-          </button>
-        )}
-      </div>
-
       {/* Tabs */}
       <div className="flex border-b border-gray-800 shrink-0">
         <button
@@ -802,11 +787,26 @@ const App: React.FC = () => {
             {/* DOM 模式 */}
             {activeTask.sourceType === 'dom' && (
               <>
-                <div className={`px-3 py-2 text-xs flex items-center gap-2 border-b border-gray-800 shrink-0 ${
-                  isSelecting ? 'bg-green-900/30 text-green-300' : 'bg-gray-800/50 text-gray-500'
+                <div className={`px-3 py-2 text-xs flex items-center justify-between border-b border-gray-800 shrink-0 ${
+                  isSelecting ? 'bg-green-900/30' : 'bg-gray-800/50'
                 }`}>
-                  <MousePointer2 size={12} />
-                  {isSelecting ? '点击页面元素添加字段' : '点击右上角开始采集'}
+                  <div className="flex items-center gap-2">
+                    <MousePointer2 size={12} className={isSelecting ? 'text-green-300' : 'text-gray-500'} />
+                    <span className={isSelecting ? 'text-green-300' : 'text-gray-500'}>
+                      {isSelecting ? '点击页面元素添加字段' : '点击右侧按钮开始选择'}
+                    </span>
+                  </div>
+                  <button
+                    onClick={toggleSelecting}
+                    className={`flex items-center gap-1.5 px-2.5 py-1 rounded text-xs font-medium transition-colors ${
+                      isSelecting
+                        ? 'bg-green-600 text-white'
+                        : 'bg-gray-700 text-gray-300 hover:bg-gray-600'
+                    }`}
+                  >
+                    {isSelecting ? <Power size={12} /> : <MousePointer2 size={12} />}
+                    {isSelecting ? '停止' : '选择元素'}
+                  </button>
                 </div>
 
                 <div className="flex-1 overflow-y-auto p-3 space-y-2 min-h-0">
@@ -837,8 +837,29 @@ const App: React.FC = () => {
                           </button>
                         </div>
                       </div>
-                      <div className="bg-gray-950 rounded px-2 py-1 text-[10px] font-mono text-gray-500 truncate">
-                        {rule.selector}
+                      <div className="flex items-center gap-1">
+                        <select
+                          value={rule.selectorType || 'css'}
+                          onChange={(e) => {
+                            const newType = e.target.value as 'css' | 'xpath';
+                            // 切换类型时，如果有备用的 xpath，可以切换
+                            const xpath = (rule as any)._xpath;
+                            if (newType === 'xpath' && xpath && rule.selectorType !== 'xpath') {
+                              handleUpdateRule(rule.id, 'selector', xpath);
+                            }
+                            handleUpdateRule(rule.id, 'selectorType', newType);
+                          }}
+                          className="bg-gray-900 border border-gray-700 rounded px-1 py-1 text-[10px] text-gray-400 outline-none shrink-0"
+                        >
+                          <option value="css">CSS</option>
+                          <option value="xpath">XPath</option>
+                        </select>
+                        <input
+                          value={rule.selector}
+                          onChange={(e) => handleUpdateRule(rule.id, 'selector', e.target.value)}
+                          className="flex-1 bg-gray-950 rounded px-2 py-1 text-[10px] font-mono text-gray-400 border border-transparent focus:border-blue-500 outline-none"
+                          placeholder={rule.selectorType === 'xpath' ? 'XPath 表达式' : 'CSS 选择器'}
+                        />
                       </div>
                     </div>
                   ))}

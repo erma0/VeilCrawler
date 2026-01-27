@@ -1,4 +1,4 @@
-import { getSmartSelector, getElementRect } from '../utils/domUtils';
+import { getSmartSelector, getSmartXPath, getElementRect, evaluateXPath } from '../utils/domUtils';
 import type { SelectorRule } from '../types';
 
 let isSelecting = false;
@@ -164,25 +164,36 @@ const handleClick = (e: MouseEvent) => {
   e.preventDefault();
   e.stopPropagation();
 
-  const selector = getSmartSelector(target);
+  const cssSelector = getSmartSelector(target);
+  const xpath = getSmartXPath(target);
   const text = target.innerText?.slice(0, 100) || '';
 
   chrome.runtime.sendMessage({
     type: 'ELEMENT_SELECTED',
-    data: { selector, text }
+    data: { selector: cssSelector, xpath, text }
   });
+};
+
+/**
+ * 根据选择器类型查询元素
+ */
+const queryElements = (selector: string, selectorType: 'css' | 'xpath' = 'css'): HTMLElement[] => {
+  if (selectorType === 'xpath') {
+    return evaluateXPath(selector);
+  }
+  try {
+    return Array.from(document.querySelectorAll(selector)) as HTMLElement[];
+  } catch {
+    return [];
+  }
 };
 
 const extractPreviewData = (rules: SelectorRule[]) => {
   if (rules.length === 0) return [];
 
   const columns = rules.map(rule => {
-    let elements: NodeListOf<HTMLElement>;
-    try {
-      elements = document.querySelectorAll(rule.selector);
-    } catch {
-      return { field: rule.fieldName, values: [] as string[] };
-    }
+    const selectorType = rule.selectorType || 'css';
+    const elements = queryElements(rule.selector, selectorType);
 
     const values = Array.from(elements).map(el => {
       if (rule.attribute === 'href') return (el as HTMLAnchorElement).href || '';
@@ -376,14 +387,10 @@ const runCollectTask = async (rules: SelectorRule[], config: any) => {
   // 采集当前页面数据
   const collectCurrentPage = () => {
     const columns = rules.map(rule => {
-      let elements: NodeListOf<HTMLElement>;
-      try {
-        elements = document.querySelectorAll(rule.selector);
-      } catch {
-        return { field: rule.fieldName, values: [] as string[] };
-      }
+      const selectorType = rule.selectorType || 'css';
+      const elements = queryElements(rule.selector, selectorType);
 
-      const values = Array.from(elements).map(el => {
+      const values = elements.map(el => {
         if (rule.attribute === 'href') return (el as HTMLAnchorElement).href || '';
         if (rule.attribute === 'src') return (el as HTMLImageElement).src || '';
         if (rule.attribute === 'innerHTML') return el.innerHTML;
