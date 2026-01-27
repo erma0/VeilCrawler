@@ -5,6 +5,33 @@ let isSelecting = false;
 let highlightEl: HTMLDivElement | null = null;
 let labelEl: HTMLDivElement | null = null;
 
+// ============ 采集状态持久化 ============
+
+interface CollectState {
+  isRunning: boolean;
+  taskId: string;
+  rules: SelectorRule[];
+  config: any;
+  collectedData: Record<string, string>[];
+  currentUrl: string;
+  startTime: number;
+}
+
+// 保存采集状态
+const saveCollectState = async (state: CollectState | null) => {
+  if (state) {
+    await chrome.storage.local.set({ _collectState: state });
+  } else {
+    await chrome.storage.local.remove(['_collectState']);
+  }
+};
+
+// 获取采集状态
+const getCollectState = async (): Promise<CollectState | null> => {
+  const result = await chrome.storage.local.get(['_collectState']);
+  return result._collectState || null;
+};
+
 // ============ 网络请求拦截 ============
 
 let interceptUrlPattern: string = ''; // 用户设置的拦截 URL 模式
@@ -360,7 +387,7 @@ const runJsonCollectTask = async (rules: SelectorRule[], jsonData: any) => {
   console.log('VeilCrawler JSON 采集完成:', allData.length, '条数据');
 };
 
-const runCollectTask = async (rules: SelectorRule[], config: any) => {
+const runCollectTask = async (rules: SelectorRule[], config: any, resumeData: Record<string, string>[] = []) => {
   // 判断是 DOM 还是 JSON 采集
   if (config.sourceType === 'json') {
     // JSON 采集需要从拦截的数据中获取
@@ -380,15 +407,20 @@ const runCollectTask = async (rules: SelectorRule[], config: any) => {
   isRunning = true;
   stopRequested = false;
   
-  const allData: Record<string, string>[] = [];
+  // 如果有恢复的数据，使用它
+  const allData: Record<string, string>[] = [...resumeData];
   const maxItems = config.maxItems || 0; // 0 表示不限制
   let noNewDataCount = 0; // 连续无新数据计数
+  
+  console.log(`VeilCrawler: 开始采集，已有 ${allData.length} 条数据`);
   
   // 采集当前页面数据
   const collectCurrentPage = () => {
     const columns = rules.map(rule => {
       const selectorType = rule.selectorType || 'css';
       const elements = queryElements(rule.selector, selectorType);
+      
+      console.log(`VeilCrawler: 规则 ${rule.fieldName} 匹配到 ${elements.length} 个元素`);
 
       const values = elements.map(el => {
         if (rule.attribute === 'href') return (el as HTMLAnchorElement).href || '';
@@ -401,6 +433,8 @@ const runCollectTask = async (rules: SelectorRule[], config: any) => {
     });
 
     const maxRows = Math.max(...columns.map(c => c.values.length), 0);
+    console.log(`VeilCrawler: 当前页采集到 ${maxRows} 条数据`);
+    
     const rows: Record<string, string>[] = [];
 
     for (let i = 0; i < maxRows; i++) {
@@ -418,8 +452,37 @@ const runCollectTask = async (rules: SelectorRule[], config: any) => {
   const scrollToLoadMore = async () => {
     const previousHeight = document.body.scrollHeight;
     window.scrollTo(0, document.body.scrollHeight);
-    await new Promise(r => setTimeout(r, 1500));
+    await new Promise(r => setTimeout(r, 2000));
     return document.body.scrollHeight > previousHeight;
+  };
+
+  // 等待 DOM 变化
+  const waitForDomChange = (timeout = 3000): Promise<boolean> => {
+    return new Promise(resolve => {
+      let resolved = false;
+      const observer = new MutationObserver(() => {
+        if (!resolved) {
+          resolved = true;
+          observer.disconnect();
+          // 再等待一下确保渲染完成
+          setTimeout(() => resolve(true), 500);
+        }
+      });
+      
+      observer.observe(document.body, {
+        childList: true,
+        subtree: true
+      });
+      
+      // 超时
+      setTimeout(() => {
+        if (!resolved) {
+          resolved = true;
+          observer.disconnect();
+          resolve(false);
+        }
+      }, timeout);
+    });
   };
 
   // 点击翻页
@@ -434,11 +497,22 @@ const runCollectTask = async (rules: SelectorRule[], config: any) => {
                           (btn as HTMLButtonElement).disabled;
         if (isDisabled) return false;
         
+        // 记录点击前的数据
+        const beforeClick = collectCurrentPage();
+        
         btn.click();
-        await new Promise(r => setTimeout(r, 2000));
+        
+        // 等待 DOM 变化或超时
+        await waitForDomChange(5000);
+        
+        // 额外等待确保页面稳定
+        await new Promise(r => setTimeout(r, 1000));
+        
         return true;
       }
-    } catch {}
+    } catch (e) {
+      console.error('VeilCrawler: 点击翻页失败', e);
+    }
     return false;
   };
 
@@ -476,12 +550,14 @@ const runCollectTask = async (rules: SelectorRule[], config: any) => {
     // 检查是否达到数量限制
     if (maxItems > 0 && allData.length >= maxItems) {
       console.log('VeilCrawler: 已达到设定的采集数量限制');
+      await saveCollectState(null); // 清除状态
       break;
     }
 
     // 连续3次无新数据则停止
     if (noNewDataCount >= 3) {
       console.log('VeilCrawler: 连续无新数据，采集完成');
+      await saveCollectState(null); // 清除状态
       break;
     }
 
@@ -490,14 +566,37 @@ const runCollectTask = async (rules: SelectorRule[], config: any) => {
       const hasMore = await scrollToLoadMore();
       if (!hasMore) {
         console.log('VeilCrawler: 滚动到底，无更多数据');
+        await saveCollectState(null); // 清除状态
         break;
       }
     } else if (config.paginationType === 'click' && config.nextPageSelector) {
+      // 记录点击前的 URL
+      const urlBeforeClick = window.location.href;
+      
+      // 先保存状态（以防页面跳转）
+      await saveCollectState({
+        isRunning: true,
+        taskId: config.id || '',
+        rules,
+        config,
+        collectedData: allData,
+        currentUrl: urlBeforeClick,
+        startTime: Date.now()
+      });
+      
       const hasNext = await clickNextPage(config.nextPageSelector);
       if (!hasNext) {
         console.log('VeilCrawler: 下一页按钮不可用，采集完成');
+        await saveCollectState(null); // 清除状态
         break;
       }
+      
+      // 检查 URL 是否变化（如果没变化，说明是 AJAX 翻页，清除状态）
+      if (window.location.href === urlBeforeClick) {
+        // AJAX 翻页，不需要保存状态
+        await saveCollectState(null);
+      }
+      // 如果 URL 变了，状态已保存，页面会重新加载并恢复
     } else {
       break; // 无翻页模式，只采集当前页
     }
@@ -505,6 +604,7 @@ const runCollectTask = async (rules: SelectorRule[], config: any) => {
   } while (!stopRequested);
 
   isRunning = false;
+  await saveCollectState(null); // 清除状态
 
   // 发送最终结果
   chrome.runtime.sendMessage({
@@ -556,10 +656,52 @@ chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
     case 'GET_INTERCEPTED_REQUESTS':
       sendResponse({ requests: interceptedRequests });
       return true;
+      
+    case 'CLEAR_COLLECT_STATE':
+      saveCollectState(null);
+      break;
   }
 
   sendResponse({ success: true });
   return true;
 });
+
+// ============ 页面加载时检查是否需要恢复采集 ============
+
+const checkAndResumeCollect = async () => {
+  const state = await getCollectState();
+  if (!state || !state.isRunning) return;
+  
+  // 检查状态是否过期（超过 5 分钟）
+  if (Date.now() - state.startTime > 5 * 60 * 1000) {
+    console.log('VeilCrawler: 采集状态已过期，清除');
+    await saveCollectState(null);
+    return;
+  }
+  
+  console.log(`VeilCrawler: 检测到未完成的采集任务，已采集 ${state.collectedData.length} 条，继续采集...`);
+  
+  // 通知 side panel 恢复状态
+  chrome.runtime.sendMessage({
+    type: 'COLLECT_RESUMED',
+    data: state.collectedData,
+    taskId: state.taskId
+  }).catch(() => {});
+  
+  // 等待页面完全加载
+  await new Promise(r => setTimeout(r, 2000));
+  
+  // 继续采集
+  runCollectTask(state.rules, state.config, state.collectedData);
+};
+
+// 页面加载完成后检查
+if (document.readyState === 'complete') {
+  checkAndResumeCollect();
+} else {
+  window.addEventListener('load', () => {
+    setTimeout(checkAndResumeCollect, 1000);
+  });
+}
 
 console.log('VeilCrawler content script loaded');

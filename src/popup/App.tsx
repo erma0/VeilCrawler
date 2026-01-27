@@ -293,6 +293,17 @@ const App: React.FC = () => {
         setTasks(prev => prev.map(t =>
           t.id === activeTaskIdRef.current ? { ...t, count: message.data.length } : t
         ));
+      } else if (message.type === 'COLLECT_RESUMED') {
+        // 采集恢复（页面跳转后继续）
+        console.log('VeilCrawler: 采集已恢复，已有', message.data.length, '条数据');
+        setCollectedData(message.data);
+        // 更新对应任务的状态
+        if (message.taskId) {
+          setTasks(prev => prev.map(t =>
+            t.id === message.taskId ? { ...t, status: 'active' as const, count: message.data.length } : t
+          ));
+          setActiveTaskId(message.taskId);
+        }
       } else if (message.type === 'JSON_INTERCEPTED') {
         setInterceptedJson(message.data);
         if (message.request) {
@@ -509,6 +520,7 @@ const App: React.FC = () => {
   // 停止任务
   const handleStopTask = () => {
     chrome.runtime.sendMessage({ type: 'STOP_TASK' });
+    chrome.runtime.sendMessage({ type: 'CLEAR_COLLECT_STATE' }); // 清除保存的采集状态
     handleUpdateTaskConfig({ status: 'idle' });
   };
 
