@@ -295,7 +295,8 @@ const App: React.FC = () => {
               attribute: 'innerText',
               exampleValue: text?.slice(0, 50)
             };
-            // 保存 xpath 备用
+            // 保存两种选择器备用
+            (newRule as any)._css = selector;
             (newRule as any)._xpath = xpath;
             return [...prev, newRule];
           });
@@ -882,10 +883,21 @@ const App: React.FC = () => {
                           value={rule.selectorType || 'css'}
                           onChange={(e) => {
                             const newType = e.target.value as 'css' | 'xpath';
-                            // 切换类型时，如果有备用的 xpath，可以切换
-                            const xpath = (rule as any)._xpath;
-                            if (newType === 'xpath' && xpath && rule.selectorType !== 'xpath') {
-                              handleUpdateRule(rule.id, 'selector', xpath);
+                            const currentType = rule.selectorType || 'css';
+                            
+                            if (newType === currentType) return;
+                            
+                            // 保存当前选择器到备用字段
+                            if (currentType === 'css') {
+                              (rule as any)._css = rule.selector;
+                            } else {
+                              (rule as any)._xpath = rule.selector;
+                            }
+                            
+                            // 切换到新类型，使用备用选择器
+                            const backup = newType === 'xpath' ? (rule as any)._xpath : (rule as any)._css;
+                            if (backup) {
+                              handleUpdateRule(rule.id, 'selector', backup);
                             }
                             handleUpdateRule(rule.id, 'selectorType', newType);
                           }}
@@ -1026,13 +1038,13 @@ const App: React.FC = () => {
                   <button
                     key={id}
                     onClick={() => handleUpdateTaskConfig({ paginationType: id as PaginationType })}
-                    className={`flex-1 flex items-center justify-center gap-1.5 py-2 rounded border text-xs transition-colors ${
+                    className={`flex-1 flex items-center justify-center gap-1 py-1.5 rounded border text-[10px] transition-colors ${
                       activeTask.paginationType === id
                         ? 'bg-blue-600 border-blue-500 text-white'
                         : 'bg-gray-800 border-gray-700 text-gray-400 hover:bg-gray-700'
                     }`}
                   >
-                    <Icon size={12} />
+                    <Icon size={10} />
                     {label}
                   </button>
                 ))}
@@ -1040,47 +1052,51 @@ const App: React.FC = () => {
               
               {/* 点击翻页选择器 */}
               {activeTask.paginationType === 'click' && (
-                <div className="mt-2">
-                  <div className="flex items-center gap-2">
-                    <input
-                      type="text"
-                      value={activeTask.nextPageSelector || ''}
-                      onChange={(e) => handleUpdateTaskConfig({ nextPageSelector: e.target.value })}
-                      placeholder="下一页按钮选择器"
-                      className="flex-1 bg-gray-800 border border-gray-700 rounded px-2 py-1.5 text-xs text-white font-mono focus:border-blue-500 outline-none"
-                    />
-                    <button
-                      onClick={startSelectNextPage}
-                      className={`px-2 py-1.5 rounded text-xs flex items-center gap-1 transition-colors ${
-                        selectingMode === 'nextPage'
-                          ? 'bg-orange-600 text-white'
-                          : 'bg-gray-700 text-gray-300 hover:bg-gray-600'
-                      }`}
-                    >
-                      <MousePointer2 size={12} />
-                      {selectingMode === 'nextPage' ? '点击选择...' : '选取'}
-                    </button>
-                  </div>
-                  {selectingMode === 'nextPage' && (
-                    <p className="text-[10px] text-orange-400 mt-1">
-                      请在页面上点击「下一页」按钮
-                    </p>
-                  )}
+                <div className="mt-1.5 flex items-center gap-1">
+                  <input
+                    type="text"
+                    value={activeTask.nextPageSelector || ''}
+                    onChange={(e) => handleUpdateTaskConfig({ nextPageSelector: e.target.value })}
+                    placeholder="下一页按钮选择器"
+                    className="flex-1 bg-gray-800 border border-gray-700 rounded px-2 py-1 text-[10px] text-white font-mono focus:border-blue-500 outline-none"
+                  />
+                  <button
+                    onClick={startSelectNextPage}
+                    className={`px-2 py-1 rounded text-[10px] flex items-center gap-1 transition-colors ${
+                      selectingMode === 'nextPage'
+                        ? 'bg-orange-600 text-white'
+                        : 'bg-gray-700 text-gray-300 hover:bg-gray-600'
+                    }`}
+                  >
+                    <MousePointer2 size={10} />
+                    {selectingMode === 'nextPage' ? '选择中' : '选取'}
+                  </button>
                 </div>
               )}
               
-              {/* 最大采集数量 */}
+              {/* 翻页参数 */}
               {activeTask.paginationType !== 'none' && (
-                <div className="mt-2 flex items-center gap-2">
-                  <span className="text-[10px] text-gray-500">最大数量:</span>
-                  <input
-                    type="number"
-                    value={activeTask.maxItems || ''}
-                    onChange={(e) => handleUpdateTaskConfig({ maxItems: parseInt(e.target.value) || 0 })}
-                    placeholder="不限"
-                    className="flex-1 bg-gray-800 border border-gray-700 rounded px-2 py-1 text-xs text-white focus:border-blue-500 outline-none w-20"
-                  />
-                  <span className="text-[10px] text-gray-600">0 或留空表示不限</span>
+                <div className="mt-1.5 flex items-center gap-3 text-[10px]">
+                  <div className="flex items-center gap-1">
+                    <span className="text-gray-500">间隔:</span>
+                    <input
+                      type="number"
+                      value={activeTask.pageInterval || 1000}
+                      onChange={(e) => handleUpdateTaskConfig({ pageInterval: parseInt(e.target.value) || 1000 })}
+                      className="w-14 bg-gray-800 border border-gray-700 rounded px-1.5 py-0.5 text-white focus:border-blue-500 outline-none"
+                    />
+                    <span className="text-gray-600">ms</span>
+                  </div>
+                  <div className="flex items-center gap-1">
+                    <span className="text-gray-500">数量:</span>
+                    <input
+                      type="number"
+                      value={activeTask.maxItems || ''}
+                      onChange={(e) => handleUpdateTaskConfig({ maxItems: parseInt(e.target.value) || 0 })}
+                      placeholder="不限"
+                      className="w-14 bg-gray-800 border border-gray-700 rounded px-1.5 py-0.5 text-white focus:border-blue-500 outline-none"
+                    />
+                  </div>
                 </div>
               )}
             </div>

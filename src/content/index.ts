@@ -409,6 +409,7 @@ const runCollectTask = async (rules: SelectorRule[], config: any, resumeData: Re
   
   // 如果有恢复的数据，使用它
   const allData: Record<string, string>[] = [...resumeData];
+  const seenKeys = new Set<string>(resumeData.map(r => Object.values(r).join('|'))); // 用于去重
   const maxItems = config.maxItems || 0; // 0 表示不限制
   let noNewDataCount = 0; // 连续无新数据计数
   
@@ -448,41 +449,59 @@ const runCollectTask = async (rules: SelectorRule[], config: any, resumeData: Re
     return rows;
   };
 
+  // 最大等待时间
+  const maxWait = config.pageInterval || 2000;
+
+  // 统一的等待函数：检测目标元素内容变化
+  const waitForReady = (oldContent: string = ''): Promise<void> => {
+    return new Promise(resolve => {
+      const startTime = Date.now();
+      
+      const check = () => {
+        // 检查第一个规则的元素
+        if (rules.length > 0) {
+          const rule = rules[0];
+          const elements = queryElements(rule.selector, rule.selectorType || 'css');
+          if (elements.length > 0) {
+            const content = elements[0]?.innerText || '';
+            // 如果有旧内容，需要检测变化；否则只要元素存在就行
+            if (!oldContent || content !== oldContent) {
+              console.log(`VeilCrawler: DOM 就绪，耗时 ${Date.now() - startTime}ms`);
+              resolve();
+              return;
+            }
+          }
+        }
+        
+        // 超时
+        if (Date.now() - startTime >= maxWait) {
+          console.log(`VeilCrawler: 等待超时 ${maxWait}ms`);
+          resolve();
+          return;
+        }
+        
+        requestAnimationFrame(check);
+      };
+      
+      requestAnimationFrame(check);
+    });
+  };
+
+  // 获取当前第一个元素的内容
+  const getFirstContent = (): string => {
+    if (rules.length === 0) return '';
+    const rule = rules[0];
+    const elements = queryElements(rule.selector, rule.selectorType || 'css');
+    return elements[0]?.innerText || '';
+  };
+
   // 滚动翻页
   const scrollToLoadMore = async () => {
     const previousHeight = document.body.scrollHeight;
+    const oldContent = getFirstContent();
     window.scrollTo(0, document.body.scrollHeight);
-    await new Promise(r => setTimeout(r, 2000));
+    await waitForReady(oldContent);
     return document.body.scrollHeight > previousHeight;
-  };
-
-  // 等待 DOM 变化
-  const waitForDomChange = (timeout = 3000): Promise<boolean> => {
-    return new Promise(resolve => {
-      let resolved = false;
-      const observer = new MutationObserver(() => {
-        if (!resolved) {
-          resolved = true;
-          observer.disconnect();
-          // 再等待一下确保渲染完成
-          setTimeout(() => resolve(true), 500);
-        }
-      });
-      
-      observer.observe(document.body, {
-        childList: true,
-        subtree: true
-      });
-      
-      // 超时
-      setTimeout(() => {
-        if (!resolved) {
-          resolved = true;
-          observer.disconnect();
-          resolve(false);
-        }
-      }, timeout);
-    });
   };
 
   // 点击翻页
@@ -490,23 +509,15 @@ const runCollectTask = async (rules: SelectorRule[], config: any, resumeData: Re
     try {
       const btn = document.querySelector(selector) as HTMLElement;
       if (btn) {
-        // 检查按钮是否可点击
         const isDisabled = btn.hasAttribute('disabled') || 
                           btn.classList.contains('disabled') ||
                           btn.getAttribute('aria-disabled') === 'true' ||
                           (btn as HTMLButtonElement).disabled;
         if (isDisabled) return false;
         
-        // 记录点击前的数据
-        const beforeClick = collectCurrentPage();
-        
+        const oldContent = getFirstContent();
         btn.click();
-        
-        // 等待 DOM 变化或超时
-        await waitForDomChange(5000);
-        
-        // 额外等待确保页面稳定
-        await new Promise(r => setTimeout(r, 1000));
+        await waitForReady(oldContent);
         
         return true;
       }
@@ -520,25 +531,29 @@ const runCollectTask = async (rules: SelectorRule[], config: any, resumeData: Re
   do {
     if (stopRequested) break;
 
+    console.log('VeilCrawler: 开始采集当前页...');
     const previousCount = allData.length;
     const pageData = collectCurrentPage();
+    console.log(`VeilCrawler: 当前页采集完成，获取 ${pageData.length} 条`);
     
-    // 去重添加
+    // 去重添加（使用 Set 优化性能）
     pageData.forEach(row => {
-      // 检查是否达到数量限制
       if (maxItems > 0 && allData.length >= maxItems) return;
       
-      const key = JSON.stringify(row);
-      if (!allData.some(d => JSON.stringify(d) === key)) {
+      const key = Object.values(row).join('|');
+      if (!seenKeys.has(key)) {
+        seenKeys.add(key);
         allData.push(row);
       }
     });
 
     // 发送进度
+    console.log('VeilCrawler: 发送进度更新...');
     chrome.runtime.sendMessage({
       type: 'COLLECT_PROGRESS',
       data: allData
     }).catch(() => {});
+    console.log('VeilCrawler: 进度已发送');
 
     // 检查是否有新数据
     if (allData.length === previousCount) {
@@ -550,14 +565,14 @@ const runCollectTask = async (rules: SelectorRule[], config: any, resumeData: Re
     // 检查是否达到数量限制
     if (maxItems > 0 && allData.length >= maxItems) {
       console.log('VeilCrawler: 已达到设定的采集数量限制');
-      await saveCollectState(null); // 清除状态
+      saveCollectState(null); // 异步清除，不等待
       break;
     }
 
     // 连续3次无新数据则停止
     if (noNewDataCount >= 3) {
       console.log('VeilCrawler: 连续无新数据，采集完成');
-      await saveCollectState(null); // 清除状态
+      saveCollectState(null);
       break;
     }
 
@@ -566,15 +581,15 @@ const runCollectTask = async (rules: SelectorRule[], config: any, resumeData: Re
       const hasMore = await scrollToLoadMore();
       if (!hasMore) {
         console.log('VeilCrawler: 滚动到底，无更多数据');
-        await saveCollectState(null); // 清除状态
+        saveCollectState(null);
         break;
       }
     } else if (config.paginationType === 'click' && config.nextPageSelector) {
       // 记录点击前的 URL
       const urlBeforeClick = window.location.href;
       
-      // 先保存状态（以防页面跳转）
-      await saveCollectState({
+      // 异步保存状态（不等待）
+      saveCollectState({
         isRunning: true,
         taskId: config.id || '',
         rules,
@@ -587,14 +602,14 @@ const runCollectTask = async (rules: SelectorRule[], config: any, resumeData: Re
       const hasNext = await clickNextPage(config.nextPageSelector);
       if (!hasNext) {
         console.log('VeilCrawler: 下一页按钮不可用，采集完成');
-        await saveCollectState(null); // 清除状态
+        saveCollectState(null);
         break;
       }
       
       // 检查 URL 是否变化（如果没变化，说明是 AJAX 翻页，清除状态）
       if (window.location.href === urlBeforeClick) {
         // AJAX 翻页，不需要保存状态
-        await saveCollectState(null);
+        saveCollectState(null);
       }
       // 如果 URL 变了，状态已保存，页面会重新加载并恢复
     } else {
@@ -604,7 +619,7 @@ const runCollectTask = async (rules: SelectorRule[], config: any, resumeData: Re
   } while (!stopRequested);
 
   isRunning = false;
-  await saveCollectState(null); // 清除状态
+  saveCollectState(null); // 清除状态
 
   // 发送最终结果
   chrome.runtime.sendMessage({
@@ -688,8 +703,36 @@ const checkAndResumeCollect = async () => {
     taskId: state.taskId
   }).catch(() => {});
   
-  // 等待页面完全加载
-  await new Promise(r => setTimeout(r, 2000));
+  // 等待目标元素出现
+  const maxWait = state.config.pageInterval || 2000;
+  await new Promise<void>(resolve => {
+    const startTime = Date.now();
+    
+    const check = () => {
+      if (state.rules.length > 0) {
+        const rule = state.rules[0];
+        const elements = rule.selectorType === 'xpath' 
+          ? evaluateXPath(rule.selector)
+          : Array.from(document.querySelectorAll(rule.selector) || []) as HTMLElement[];
+        
+        if (elements.length > 0) {
+          console.log(`VeilCrawler: DOM 就绪，耗时 ${Date.now() - startTime}ms`);
+          resolve();
+          return;
+        }
+      }
+      
+      if (Date.now() - startTime >= maxWait) {
+        console.log(`VeilCrawler: 等待超时 ${maxWait}ms`);
+        resolve();
+        return;
+      }
+      
+      requestAnimationFrame(check);
+    };
+    
+    requestAnimationFrame(check);
+  });
   
   // 继续采集
   runCollectTask(state.rules, state.config, state.collectedData);
@@ -699,9 +742,7 @@ const checkAndResumeCollect = async () => {
 if (document.readyState === 'complete') {
   checkAndResumeCollect();
 } else {
-  window.addEventListener('load', () => {
-    setTimeout(checkAndResumeCollect, 1000);
-  });
+  window.addEventListener('load', checkAndResumeCollect);
 }
 
 console.log('VeilCrawler content script loaded');

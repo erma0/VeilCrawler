@@ -10,6 +10,7 @@ export interface Task {
   paginationType: PaginationType;
   nextPageSelector?: string;
   maxItems?: number;
+  pageInterval?: number;  // 翻页间隔（毫秒）
   count: number;
 }
 
