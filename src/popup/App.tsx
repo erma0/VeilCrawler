@@ -1,5 +1,5 @@
 import React, { useState, useEffect, useCallback } from 'react';
-import { Layers, Settings, Play, Trash2, Plus, MousePointer2, Ban, ArrowDownToLine, MousePointerClick, Power, Code, Braces, ChevronRight, ChevronDown, Globe, RefreshCw, Edit2, Check, X, FileJson, FileSpreadsheet, Copy, StopCircle, Upload, Download, Package } from 'lucide-react';
+import { Layers, Settings, Play, Trash2, Plus, MousePointer2, Ban, ArrowDownToLine, MousePointerClick, Power, Code, Braces, ChevronRight, ChevronDown, Globe, RefreshCw, Edit2, Check, X, FileJson, FileSpreadsheet, Copy, StopCircle, Upload, Download, Package, Link } from 'lucide-react';
 import type { Task, SelectorRule, CollectedData, PaginationType } from '../types';
 import { getDomain } from '../utils/urlUtils';
 
@@ -101,6 +101,10 @@ const App: React.FC = () => {
   const [isCreating, setIsCreating] = useState(false);
   const [newTaskName, setNewTaskName] = useState('');
   const [newTaskUrl, setNewTaskUrl] = useState('');
+  
+  // URL 导入任务状态
+  const [isImportingUrl, setIsImportingUrl] = useState(false);
+  const [importUrl, setImportUrl] = useState('');
   
   // 页面更新触发器
   const [pageUpdateTrigger, setPageUpdateTrigger] = useState(0);
@@ -545,6 +549,104 @@ const App: React.FC = () => {
     });
   };
 
+  // 处理导入数据逻辑
+  const processImportData = (importData: any) => {
+    try {
+      const importedTasks: Task[] = [];
+      const importedRules: Record<string, SelectorRule[]> = {};
+
+      // 处理单个任务导入
+      if (importData.task && importData.rules) {
+        const newTaskId = Date.now().toString();
+        const newTask: Task = {
+          ...importData.task,
+          id: newTaskId,
+          name: generateTaskName(importData.task.name + ' (导入)'),
+          status: 'idle',
+          count: 0
+        };
+        importedTasks.push(newTask);
+        importedRules[`rules_${newTaskId}`] = importData.rules;
+      }
+      // 处理批量备份导入
+      else if (importData.type === 'batch_backup' && Array.isArray(importData.tasks)) {
+        importData.tasks.forEach((item: any, index: number) => {
+          if (item.task && item.rules) {
+            const newTaskId = (Date.now() + index).toString();
+            const newTask: Task = {
+              ...item.task,
+              id: newTaskId,
+              name: generateTaskName(item.task.name + ' (导入)'),
+              status: 'idle',
+              count: 0
+            };
+            importedTasks.push(newTask);
+            importedRules[`rules_${newTaskId}`] = item.rules;
+          }
+        });
+      } else {
+        alert('无效的任务文件格式');
+        return;
+      }
+      
+      if (importedTasks.length === 0) {
+        alert('未找到有效的任务数据');
+        return;
+      }
+
+      // 保存新任务
+      const newTasks = [...tasks, ...importedTasks];
+      setTasks(newTasks);
+      
+      // 保存规则
+      chrome.storage.local.set(importedRules);
+      
+      // 如果只导入了一个任务，自动选中它
+      if (importedTasks.length === 1) {
+        const newTaskId = importedTasks[0].id;
+        setActiveTaskId(newTaskId);
+        setRules(importedRules[`rules_${newTaskId}`]);
+        setActiveTab('config');
+      }
+      
+      alert(`成功导入 ${importedTasks.length} 个任务！`);
+    } catch (err) {
+      console.error('Import failed:', err);
+      alert('导入失败：数据格式错误');
+    }
+  };
+
+  // 从 URL 导入任务 (开始)
+  const handleStartImportTaskFromUrl = () => {
+    setIsImportingUrl(true);
+    setImportUrl('');
+  };
+
+  // 确认导入 URL
+  const handleConfirmImportUrl = async () => {
+    if (!importUrl.trim()) return;
+
+    try {
+      const res = await fetch(importUrl.trim());
+      if (!res.ok) {
+        throw new Error(`HTTP error! status: ${res.status}`);
+      }
+      const data = await res.json();
+      processImportData(data);
+      setIsImportingUrl(false);
+      setImportUrl('');
+    } catch (error) {
+      console.error('Fetch failed:', error);
+      alert('从 URL 导入失败，请检查链接是否有效且允许跨域访问。');
+    }
+  };
+
+  // 取消导入 URL
+  const handleCancelImportUrl = () => {
+    setIsImportingUrl(false);
+    setImportUrl('');
+  };
+
   // 导入任务配置（支持单个或批量）
   const handleImportTask = () => {
     const input = document.createElement('input');
@@ -559,65 +661,7 @@ const App: React.FC = () => {
         try {
           const content = event.target?.result as string;
           const importData = JSON.parse(content);
-          
-          const importedTasks: Task[] = [];
-          const importedRules: Record<string, SelectorRule[]> = {};
-
-          // 处理单个任务导入
-          if (importData.task && importData.rules) {
-            const newTaskId = Date.now().toString();
-            const newTask: Task = {
-              ...importData.task,
-              id: newTaskId,
-              name: generateTaskName(importData.task.name + ' (导入)'),
-              status: 'idle',
-              count: 0
-            };
-            importedTasks.push(newTask);
-            importedRules[`rules_${newTaskId}`] = importData.rules;
-          }
-          // 处理批量备份导入
-          else if (importData.type === 'batch_backup' && Array.isArray(importData.tasks)) {
-            importData.tasks.forEach((item: any, index: number) => {
-              if (item.task && item.rules) {
-                const newTaskId = (Date.now() + index).toString();
-                const newTask: Task = {
-                  ...item.task,
-                  id: newTaskId,
-                  name: generateTaskName(item.task.name + ' (导入)'),
-                  status: 'idle',
-                  count: 0
-                };
-                importedTasks.push(newTask);
-                importedRules[`rules_${newTaskId}`] = item.rules;
-              }
-            });
-          } else {
-            alert('无效的任务文件格式');
-            return;
-          }
-          
-          if (importedTasks.length === 0) {
-            alert('未找到有效的任务数据');
-            return;
-          }
-
-          // 保存新任务
-          const newTasks = [...tasks, ...importedTasks];
-          setTasks(newTasks);
-          
-          // 保存规则
-          chrome.storage.local.set(importedRules);
-          
-          // 如果只导入了一个任务，自动选中它
-          if (importedTasks.length === 1) {
-            const newTaskId = importedTasks[0].id;
-            setActiveTaskId(newTaskId);
-            setRules(importedRules[`rules_${newTaskId}`]);
-            setActiveTab('config');
-          }
-          
-          alert(`成功导入 ${importedTasks.length} 个任务！`);
+          processImportData(importData);
         } catch (err) {
           console.error('Import failed:', err);
           alert('导入失败：文件格式错误');
@@ -785,9 +829,16 @@ const App: React.FC = () => {
               </span>
               <div className="flex items-center gap-1">
                 <button
+                  onClick={handleStartImportTaskFromUrl}
+                  className="p-1 hover:bg-gray-800 rounded text-gray-500 hover:text-white"
+                  title="从 URL 导入任务"
+                >
+                  <Link size={14} />
+                </button>
+                <button
                   onClick={handleImportTask}
                   className="p-1 hover:bg-gray-800 rounded text-gray-500 hover:text-white"
-                  title="导入任务"
+                  title="导入任务 (文件)"
                 >
                   <Upload size={14} />
                 </button>
@@ -809,6 +860,39 @@ const App: React.FC = () => {
                 </button>
               </div>
             </div>
+
+            {/* URL 导入表单 */}
+            {isImportingUrl && (
+              <div className="bg-gray-800 border border-blue-500/50 rounded p-3 space-y-2 mb-2">
+                <div className="text-xs font-semibold text-blue-400 mb-2">从 URL 导入任务</div>
+                <div>
+                  <label className="text-[10px] text-gray-500 block mb-1">配置 URL</label>
+                  <input
+                    type="text"
+                    value={importUrl}
+                    onChange={(e) => setImportUrl(e.target.value)}
+                    placeholder="https://example.com/task.json"
+                    className="w-full bg-gray-900 border border-gray-700 rounded px-2 py-1.5 text-xs text-white focus:border-blue-500 outline-none font-mono"
+                    autoFocus
+                  />
+                </div>
+                <div className="flex justify-end gap-2 pt-1">
+                  <button
+                    onClick={handleCancelImportUrl}
+                    className="px-3 py-1 text-xs text-gray-400 hover:text-white hover:bg-gray-700 rounded"
+                  >
+                    取消
+                  </button>
+                  <button
+                    onClick={handleConfirmImportUrl}
+                    disabled={!importUrl.trim()}
+                    className="px-3 py-1 text-xs bg-blue-600 hover:bg-blue-500 disabled:bg-gray-700 disabled:text-gray-500 text-white rounded"
+                  >
+                    导入
+                  </button>
+                </div>
+              </div>
+            )}
 
             {/* 新建任务表单 */}
             {isCreating && (
