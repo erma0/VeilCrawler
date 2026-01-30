@@ -11,6 +11,7 @@ export interface Task {
   nextPageSelector?: string;
   maxItems?: number;
   pageInterval?: number;  // 翻页间隔（毫秒）
+  deduplicate?: boolean;  // 是否去重
   count: number;
 }
 
@@ -22,6 +23,7 @@ export interface SelectorRule {
   selectorType?: 'css' | 'xpath';  // 选择器类型
   attribute?: string;
   exampleValue?: string;
+  isUniqueKey?: boolean; // 是否作为去重主键
 }
 
 export interface CollectedData {

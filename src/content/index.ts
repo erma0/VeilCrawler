@@ -409,7 +409,13 @@ const runCollectTask = async (rules: SelectorRule[], config: any, resumeData: Re
   
   // 如果有恢复的数据，使用它
   const allData: Record<string, string>[] = [...resumeData];
-  const seenKeys = new Set<string>(resumeData.map(r => Object.values(r).join('|'))); // 用于去重
+  const uniqueKeys = rules.filter(r => r.isUniqueKey).map(r => r.fieldName);
+  const seenKeys = new Set<string>(resumeData.map(r => {
+    if (uniqueKeys.length > 0) {
+      return uniqueKeys.map(k => r[k]).join('|');
+    }
+    return Object.values(r).join('|');
+  })); // 用于去重
   const maxItems = config.maxItems || 0; // 0 表示不限制
   let noNewDataCount = 0; // 连续无新数据计数
   
@@ -449,11 +455,18 @@ const runCollectTask = async (rules: SelectorRule[], config: any, resumeData: Re
     return rows;
   };
 
-  // 最大等待时间
-  const maxWait = config.pageInterval || 2000;
+  // DOM 就绪超时时间 (10秒)
+  const domReadyTimeout = 10000;
 
-  // 统一的等待函数：检测目标元素内容变化
+  // 统一的等待函数
   const waitForReady = (oldContent: string = ''): Promise<void> => {
+    // 模式 1: 固定间隔模式 (用户明确设置了间隔时间)
+    if (config.pageInterval && config.pageInterval > 0) {
+      console.log(`VeilCrawler: 固定间隔模式，等待 ${config.pageInterval}ms`);
+      return new Promise(resolve => setTimeout(resolve, config.pageInterval));
+    }
+
+    // 模式 2: 智能检测模式 (无间隔或间隔为0)
     return new Promise(resolve => {
       const startTime = Date.now();
       
@@ -474,8 +487,8 @@ const runCollectTask = async (rules: SelectorRule[], config: any, resumeData: Re
         }
         
         // 超时
-        if (Date.now() - startTime >= maxWait) {
-          console.log(`VeilCrawler: 等待超时 ${maxWait}ms`);
+        if (Date.now() - startTime >= domReadyTimeout) {
+          console.log(`VeilCrawler: 等待超时 ${domReadyTimeout}ms`);
           resolve();
           return;
         }
@@ -536,16 +549,33 @@ const runCollectTask = async (rules: SelectorRule[], config: any, resumeData: Re
     const pageData = collectCurrentPage();
     console.log(`VeilCrawler: 当前页采集完成，获取 ${pageData.length} 条`);
     
-    // 去重添加（使用 Set 优化性能）
-    pageData.forEach(row => {
-      if (maxItems > 0 && allData.length >= maxItems) return;
+      // 去重添加（使用 Set 优化性能）
+      const shouldDeduplicate = config.deduplicate !== false; // 默认为 true
       
-      const key = Object.values(row).join('|');
-      if (!seenKeys.has(key)) {
-        seenKeys.add(key);
-        allData.push(row);
-      }
-    });
+      // 找出所有被标记为主键的字段
+      const uniqueKeys = rules.filter(r => r.isUniqueKey).map(r => r.fieldName);
+      
+      pageData.forEach(row => {
+        if (maxItems > 0 && allData.length >= maxItems) return;
+        
+        if (shouldDeduplicate) {
+          // 如果有指定主键，只根据主键字段去重；否则使用所有字段
+          let key;
+          if (uniqueKeys.length > 0) {
+            key = uniqueKeys.map(k => row[k]).join('|');
+          } else {
+            key = Object.values(row).join('|');
+          }
+          
+          if (!seenKeys.has(key)) {
+            seenKeys.add(key);
+            allData.push(row);
+          }
+        } else {
+          // 不去重，直接添加
+          allData.push(row);
+        }
+      });
 
     // 发送进度
     console.log('VeilCrawler: 发送进度更新...');
@@ -704,7 +734,7 @@ const checkAndResumeCollect = async () => {
   }).catch(() => {});
   
   // 等待目标元素出现
-  const maxWait = state.config.pageInterval || 2000;
+  const domReadyTimeout = 10000;
   await new Promise<void>(resolve => {
     const startTime = Date.now();
     
@@ -722,8 +752,8 @@ const checkAndResumeCollect = async () => {
         }
       }
       
-      if (Date.now() - startTime >= maxWait) {
-        console.log(`VeilCrawler: 等待超时 ${maxWait}ms`);
+      if (Date.now() - startTime >= domReadyTimeout) {
+        console.log(`VeilCrawler: 等待超时 ${domReadyTimeout}ms`);
         resolve();
         return;
       }

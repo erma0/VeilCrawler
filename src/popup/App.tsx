@@ -102,6 +102,9 @@ const App: React.FC = () => {
   const [newTaskName, setNewTaskName] = useState('');
   const [newTaskUrl, setNewTaskUrl] = useState('');
   
+  // 页面更新触发器
+  const [pageUpdateTrigger, setPageUpdateTrigger] = useState(0);
+  
   // 编辑任务状态
   const [editingTaskId, setEditingTaskId] = useState<string | null>(null);
   const [editTaskName, setEditTaskName] = useState('');
@@ -237,9 +240,15 @@ const App: React.FC = () => {
     };
     
     chrome.tabs.onActivated.addListener(handleTabActivated);
-    chrome.tabs.onUpdated.addListener((_tabId, changeInfo) => {
-      if (changeInfo.url) {
-        handleTabActivated();
+    chrome.tabs.onUpdated.addListener((_tabId, changeInfo, tab) => {
+      if (tab.active) {
+        if (changeInfo.url) {
+          handleTabActivated();
+        }
+        // 当页面加载完成或 URL 变化时，触发预览更新
+        if (changeInfo.status === 'complete' || changeInfo.url) {
+          setPageUpdateTrigger(prev => prev + 1);
+        }
       }
     });
     
@@ -378,7 +387,7 @@ const App: React.FC = () => {
     } else {
       setPreviewData([]);
     }
-  }, [rules, requestPreview]);
+  }, [rules, requestPreview, pageUpdateTrigger]);
 
   const handleAddTask = () => {
     // 显示创建表单，默认使用当前 URL
@@ -510,8 +519,8 @@ const App: React.FC = () => {
     setRules(prev => prev.filter(r => r.id !== id));
   };
 
-  const handleUpdateRule = (id: string, field: keyof SelectorRule, value: string) => {
-    setRules(prev => prev.map(r => r.id === id ? { ...r, [field]: value } : r));
+  const handleUpdateRule = (id: string, field: keyof SelectorRule, value: string | boolean) => {
+    setRules(prev => prev.map(r => r.id === id ? { ...r, [field]: value === 'true' ? true : value === 'false' ? false : value } : r));
   };
 
   const handleAddJsonRule = (path: string, value: any) => {
@@ -860,6 +869,26 @@ const App: React.FC = () => {
                           className="bg-transparent text-xs font-bold text-white border-b border-transparent focus:border-blue-500 outline-none w-24"
                         />
                         <div className="flex items-center gap-1">
+                          <div className="flex items-center gap-2 mr-2">
+                            <label className="flex items-center gap-1.5 cursor-pointer group" title="勾选作为去重依据。&#10;支持多选：多选时表示这些字段组合起来必须唯一（联合主键）。">
+                              <div className={`w-3 h-3 rounded border flex items-center justify-center transition-all ${
+                                rule.isUniqueKey 
+                                  ? 'bg-blue-600 border-blue-600' 
+                                  : 'bg-gray-800 border-gray-600 group-hover:border-gray-500'
+                              }`}>
+                                {rule.isUniqueKey && <Check size={8} className="text-white" strokeWidth={4} />}
+                              </div>
+                              <input
+                                type="checkbox"
+                                checked={!!rule.isUniqueKey}
+                                onChange={(e) => handleUpdateRule(rule.id, 'isUniqueKey', String(e.target.checked))}
+                                className="hidden"
+                              />
+                              <span className={`text-[9px] font-medium transition-colors ${
+                                rule.isUniqueKey ? 'text-blue-400' : 'text-gray-500 group-hover:text-gray-400'
+                              }`}>主键</span>
+                            </label>
+                          </div>
                           <select
                             value={rule.attribute}
                             onChange={(e) => handleUpdateRule(rule.id, 'attribute', e.target.value)}
@@ -1081,9 +1110,14 @@ const App: React.FC = () => {
                     <span className="text-gray-500">间隔:</span>
                     <input
                       type="number"
-                      value={activeTask.pageInterval || 1000}
-                      onChange={(e) => handleUpdateTaskConfig({ pageInterval: parseInt(e.target.value) || 1000 })}
-                      className="w-14 bg-gray-800 border border-gray-700 rounded px-1.5 py-0.5 text-white focus:border-blue-500 outline-none"
+                      value={activeTask.pageInterval || ''}
+                      onChange={(e) => {
+                        const val = e.target.value;
+                        handleUpdateTaskConfig({ pageInterval: val === '' ? 0 : parseInt(val) });
+                      }}
+                      placeholder="智能"
+                      title="留空: 智能检测 DOM 变化 (推荐)&#10;设置数值: 固定等待时间 (毫秒)"
+                      className="w-14 bg-gray-800 border border-gray-700 rounded px-1.5 py-0.5 text-white focus:border-blue-500 outline-none placeholder-gray-600"
                     />
                     <span className="text-gray-600">ms</span>
                   </div>
@@ -1097,6 +1131,23 @@ const App: React.FC = () => {
                       className="w-14 bg-gray-800 border border-gray-700 rounded px-1.5 py-0.5 text-white focus:border-blue-500 outline-none"
                     />
                   </div>
+                  
+                  {/* 去重开关 - 放在同一行 */}
+                  <label className="flex items-center gap-1.5 cursor-pointer group ml-auto" title="开启后将过滤重复数据&#10;可在字段配置中勾选“主键”来指定唯一标识">
+                    <span className="text-gray-500 group-hover:text-gray-400 transition-colors">
+                      去重
+                    </span>
+                    <div className="relative">
+                      <input
+                        type="checkbox"
+                        checked={activeTask.deduplicate !== false} // 默认为 true
+                        onChange={(e) => handleUpdateTaskConfig({ deduplicate: e.target.checked })}
+                        className="peer sr-only"
+                      />
+                      <div className="w-6 h-3 bg-gray-700 rounded-full peer-checked:bg-blue-600 transition-colors"></div>
+                      <div className="absolute left-0.5 top-0.5 w-2 h-2 bg-white rounded-full transition-transform peer-checked:translate-x-3"></div>
+                    </div>
+                  </label>
                 </div>
               )}
             </div>
@@ -1109,6 +1160,13 @@ const App: React.FC = () => {
                     {collectedData.length > 0 ? `结果 (${collectedData.length} 条)` : `预览 (${previewData.length} 条)`}
                   </span>
                   <div className="flex items-center gap-1">
+                    <button
+                      onClick={requestPreview}
+                      className="p-1 text-gray-500 hover:text-white hover:bg-gray-800 rounded"
+                      title="刷新预览"
+                    >
+                      <RefreshCw size={12} />
+                    </button>
                     <button
                       onClick={handleCopyData}
                       className="p-1 text-gray-500 hover:text-white hover:bg-gray-800 rounded"
