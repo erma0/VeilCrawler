@@ -44,7 +44,7 @@ const copyFiles = () => ({
     ]);
     
     sizes.forEach(size => {
-      const customPath = resolve('assets', `icon${size}.png`);
+      const customPath = resolve('src/icons', `icon${size}.png`);
       const destPath = resolve(iconsDir, `icon${size}.png`);
       if (fs.existsSync(customPath)) {
         fs.copyFileSync(customPath, destPath);
