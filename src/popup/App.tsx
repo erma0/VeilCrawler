@@ -1,5 +1,5 @@
 import React, { useState, useEffect, useCallback } from 'react';
-import { Layers, Settings, Play, Trash2, Plus, MousePointer2, Ban, ArrowDownToLine, MousePointerClick, Power, Code, Braces, ChevronRight, ChevronDown, Globe, RefreshCw, Edit2, Check, X, FileJson, FileSpreadsheet, Copy, StopCircle } from 'lucide-react';
+import { Layers, Settings, Play, Trash2, Plus, MousePointer2, Ban, ArrowDownToLine, MousePointerClick, Power, Code, Braces, ChevronRight, ChevronDown, Globe, RefreshCw, Edit2, Check, X, FileJson, FileSpreadsheet, Copy, StopCircle, Upload, Download, Package } from 'lucide-react';
 import type { Task, SelectorRule, CollectedData, PaginationType } from '../types';
 import { getDomain } from '../utils/urlUtils';
 
@@ -489,6 +489,142 @@ const App: React.FC = () => {
     setEditingTaskId(null);
   };
 
+  // 导出任务配置（单个）
+  const handleExportTask = (task: Task, e: React.MouseEvent) => {
+    e.stopPropagation();
+    
+    // 获取该任务的规则
+    chrome.storage.local.get([`rules_${task.id}`], (result) => {
+      const taskRules = result[`rules_${task.id}`] || [];
+      
+      const exportData = {
+        task,
+        rules: taskRules,
+        version: '1.0.0',
+        exportedAt: Date.now(),
+        type: 'single_task'
+      };
+      
+      const blob = new Blob([JSON.stringify(exportData, null, 2)], { type: 'application/json' });
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement('a');
+      a.href = url;
+      a.download = `veil_task_${task.name}_${Date.now()}.json`;
+      a.click();
+      URL.revokeObjectURL(url);
+    });
+  };
+
+  // 批量导出所有任务
+  const handleExportAllTasks = () => {
+    if (tasks.length === 0) return;
+
+    // 获取所有任务的规则
+    const ruleKeys = tasks.map(t => `rules_${t.id}`);
+    chrome.storage.local.get(ruleKeys, (result) => {
+      const exportData = {
+        tasks: tasks.map(t => ({
+          task: t,
+          rules: result[`rules_${t.id}`] || []
+        })),
+        version: '1.0.0',
+        exportedAt: Date.now(),
+        type: 'batch_backup'
+      };
+      
+      const blob = new Blob([JSON.stringify(exportData, null, 2)], { type: 'application/json' });
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement('a');
+      a.href = url;
+      a.download = `veil_backup_all_${Date.now()}.json`;
+      a.click();
+      URL.revokeObjectURL(url);
+    });
+  };
+
+  // 导入任务配置（支持单个或批量）
+  const handleImportTask = () => {
+    const input = document.createElement('input');
+    input.type = 'file';
+    input.accept = '.json';
+    input.onchange = (e) => {
+      const file = (e.target as HTMLInputElement).files?.[0];
+      if (!file) return;
+      
+      const reader = new FileReader();
+      reader.onload = (event) => {
+        try {
+          const content = event.target?.result as string;
+          const importData = JSON.parse(content);
+          
+          const importedTasks: Task[] = [];
+          const importedRules: Record<string, SelectorRule[]> = {};
+
+          // 处理单个任务导入
+          if (importData.task && importData.rules) {
+            const newTaskId = Date.now().toString();
+            const newTask: Task = {
+              ...importData.task,
+              id: newTaskId,
+              name: generateTaskName(importData.task.name + ' (导入)'),
+              status: 'idle',
+              count: 0
+            };
+            importedTasks.push(newTask);
+            importedRules[`rules_${newTaskId}`] = importData.rules;
+          }
+          // 处理批量备份导入
+          else if (importData.type === 'batch_backup' && Array.isArray(importData.tasks)) {
+            importData.tasks.forEach((item: any, index: number) => {
+              if (item.task && item.rules) {
+                const newTaskId = (Date.now() + index).toString();
+                const newTask: Task = {
+                  ...item.task,
+                  id: newTaskId,
+                  name: generateTaskName(item.task.name + ' (导入)'),
+                  status: 'idle',
+                  count: 0
+                };
+                importedTasks.push(newTask);
+                importedRules[`rules_${newTaskId}`] = item.rules;
+              }
+            });
+          } else {
+            alert('无效的任务文件格式');
+            return;
+          }
+          
+          if (importedTasks.length === 0) {
+            alert('未找到有效的任务数据');
+            return;
+          }
+
+          // 保存新任务
+          const newTasks = [...tasks, ...importedTasks];
+          setTasks(newTasks);
+          
+          // 保存规则
+          chrome.storage.local.set(importedRules);
+          
+          // 如果只导入了一个任务，自动选中它
+          if (importedTasks.length === 1) {
+            const newTaskId = importedTasks[0].id;
+            setActiveTaskId(newTaskId);
+            setRules(importedRules[`rules_${newTaskId}`]);
+            setActiveTab('config');
+          }
+          
+          alert(`成功导入 ${importedTasks.length} 个任务！`);
+        } catch (err) {
+          console.error('Import failed:', err);
+          alert('导入失败：文件格式错误');
+        }
+      };
+      reader.readAsText(file);
+    };
+    input.click();
+  };
+
   const handleUpdateTaskConfig = (updates: Partial<Task>) => {
     if (activeTaskId) {
       setTasks(prev => prev.map(t =>
@@ -644,13 +780,31 @@ const App: React.FC = () => {
               <span className="text-xs text-gray-500 uppercase font-semibold">
                 任务列表 ({tasks.length})
               </span>
-              <button
-                onClick={handleAddTask}
-                className="p-1 hover:bg-gray-800 rounded text-blue-400"
-                disabled={isCreating}
-              >
-                <Plus size={14} />
-              </button>
+              <div className="flex items-center gap-1">
+                <button
+                  onClick={handleImportTask}
+                  className="p-1 hover:bg-gray-800 rounded text-gray-500 hover:text-white"
+                  title="导入任务"
+                >
+                  <Upload size={14} />
+                </button>
+                <button
+                  onClick={handleExportAllTasks}
+                  className="p-1 hover:bg-gray-800 rounded text-gray-500 hover:text-white"
+                  title="批量导出备份"
+                  disabled={tasks.length === 0}
+                >
+                  <Package size={14} />
+                </button>
+                <button
+                  onClick={handleAddTask}
+                  className="p-1 hover:bg-gray-800 rounded text-blue-400"
+                  disabled={isCreating}
+                  title="新建任务"
+                >
+                  <Plus size={14} />
+                </button>
+              </div>
             </div>
 
             {/* 新建任务表单 */}
@@ -778,6 +932,13 @@ const App: React.FC = () => {
                       </div>
                     </div>
                     <div className="flex items-center gap-1 opacity-0 group-hover:opacity-100 transition-opacity ml-2">
+                      <button
+                        onClick={(e) => handleExportTask(task, e)}
+                        className="p-1 text-gray-500 hover:text-green-400 hover:bg-gray-700 rounded"
+                        title="导出配置"
+                      >
+                        <Download size={12} />
+                      </button>
                       <button
                         onClick={(e) => handleStartEditTask(task, e)}
                         className="p-1 text-gray-500 hover:text-blue-400 hover:bg-gray-700 rounded"
