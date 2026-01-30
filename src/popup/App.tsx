@@ -8,6 +8,7 @@ interface NetworkRequest {
   method: string;
   url: string;
   status?: number;
+  responseData?: any;
 }
 
 // JSON 树形查看器组件
@@ -96,6 +97,19 @@ const App: React.FC = () => {
   const [interceptedJson, setInterceptedJson] = useState<any>(null);
   const [networkRequests, setNetworkRequests] = useState<NetworkRequest[]>([]);
   const [selectedRequestId, setSelectedRequestId] = useState<string | null>(null);
+  const [isInterceptEnabled, setIsInterceptEnabled] = useState(false);
+  
+  // 拦截记录缓存（切换模式时保留）
+  const [cachedNetworkRequests, setCachedNetworkRequests] = useState<NetworkRequest[]>([]);
+  const [cachedInterceptedJson, setCachedInterceptedJson] = useState<any>(null);
+  
+  // 折叠状态
+  const [isRequestListCollapsed, setIsRequestListCollapsed] = useState(false);
+  const [isFieldsCollapsed, setIsFieldsCollapsed] = useState(false);
+  const [isJsonPreviewCollapsed, setIsJsonPreviewCollapsed] = useState(false);
+  
+  // JSON 模式预览数据
+  const [jsonPreviewData, setJsonPreviewData] = useState<CollectedData[]>([]);
   
   // 新建任务表单状态
   const [isCreating, setIsCreating] = useState(false);
@@ -146,7 +160,11 @@ const App: React.FC = () => {
 
   // 从 storage 加载任务
   useEffect(() => {
-    chrome.storage.local.get(['tasks', 'activeTaskId', '_collectState'], (result) => {
+    chrome.storage.local.get(['tasks', 'activeTaskId', '_collectState', '_interceptState'], (result) => {
+      if (result._interceptState?.enabled) {
+        setIsInterceptEnabled(true);
+      }
+
       if (result.tasks && result.tasks.length > 0) {
         // 检查是否有正在进行的采集
         const collectState = result._collectState;
@@ -347,11 +365,24 @@ const App: React.FC = () => {
         setInterceptedJson(message.data);
         if (message.request) {
           setNetworkRequests(prev => {
-            // 避免重复
-            if (prev.some(r => r.id === message.request.id)) return prev;
-            return [...prev, message.request];
+            // 避免重复，同时缓存响应数据
+            if (prev.some(r => r.id === message.request.id)) {
+              return prev.map(r => 
+                r.id === message.request.id 
+                  ? { ...r, responseData: message.data }
+                  : r
+              );
+            }
+            return [...prev, { ...message.request, responseData: message.data }];
           });
           setSelectedRequestId(message.request.id);
+        }
+      } else if (message.type === 'SET_INTERCEPT_URL') {
+        // 监听来自 content script 的状态更新（例如用户在页面上点击了停止）
+        if (message.enabled === false) {
+          setIsInterceptEnabled(false);
+          setNetworkRequests([]);
+          setInterceptedJson(null);
         }
       }
     };
@@ -681,21 +712,64 @@ const App: React.FC = () => {
   };
 
   const handleSwitchSourceType = (type: 'dom' | 'json') => {
+    const currentType = activeTask?.sourceType;
+    
+    // 切换前保存当前模式的拦截记录
+    if (currentType === 'json' && type === 'dom') {
+      setCachedNetworkRequests(networkRequests);
+      setCachedInterceptedJson(interceptedJson);
+    }
+    
     setRules([]);
     handleUpdateTaskConfig({ sourceType: type });
+    
     if (type === 'dom') {
-      setInterceptedJson(null);
-      setNetworkRequests([]);
+      // 切换到 DOM 模式时关闭拦截，但不清空记录
+      if (isInterceptEnabled) {
+        setIsInterceptEnabled(false);
+        chrome.runtime.sendMessage({
+          type: 'SET_INTERCEPT_URL',
+          url: '',
+          enabled: false
+        });
+      }
+    } else if (type === 'json') {
+      // 切换到 JSON 模式时恢复缓存的拦截记录
+      if (cachedNetworkRequests.length > 0) {
+        setNetworkRequests(cachedNetworkRequests);
+        setInterceptedJson(cachedInterceptedJson);
+        setSelectedRequestId(cachedNetworkRequests[cachedNetworkRequests.length - 1].id);
+      }
     }
   };
 
   // 设置拦截 URL
   const handleSetInterceptUrl = (url: string) => {
     handleUpdateTaskConfig({ interceptUrl: url });
+    if (isInterceptEnabled) {
+      chrome.runtime.sendMessage({
+        type: 'SET_INTERCEPT_URL',
+        url,
+        enabled: true
+      });
+    }
+  };
+
+  // 切换拦截启用状态
+  const handleToggleIntercept = () => {
+    const newEnabled = !isInterceptEnabled;
+    setIsInterceptEnabled(newEnabled);
+    
     chrome.runtime.sendMessage({
       type: 'SET_INTERCEPT_URL',
-      url
+      url: activeTask?.interceptUrl || '',
+      enabled: newEnabled
     });
+    
+    if (!newEnabled) {
+      setNetworkRequests([]);
+      setInterceptedJson(null);
+    }
   };
 
   const handleRemoveRule = (id: string) => {
@@ -717,6 +791,92 @@ const App: React.FC = () => {
     };
     setRules(prev => [...prev, newRule]);
   };
+
+  // 根据 JSON 数据和规则生成预览数据
+  useEffect(() => {
+    if (activeTask?.sourceType !== 'json' || !interceptedJson || rules.length === 0) {
+      setJsonPreviewData([]);
+      return;
+    }
+
+    try {
+      const extractValue = (obj: any, path: string): any => {
+        const parts = path.split('.');
+        let current = obj;
+        for (const part of parts) {
+          if (current === null || current === undefined) return null;
+          if (part === '[*]' || part.includes('[*]')) {
+            const key = part.replace('[*]', '');
+            if (key) current = current[key];
+            return current;
+          }
+          current = current[part];
+        }
+        return current;
+      };
+
+      let dataArray: any[] = [];
+      let arrayPath = '';
+      
+      for (const rule of rules) {
+        const path = rule.selector;
+        if (path.includes('[*]')) {
+          arrayPath = path.split('[*]')[0];
+          const arr = arrayPath ? extractValue(interceptedJson, arrayPath.replace(/\.$/, '')) : interceptedJson;
+          if (Array.isArray(arr)) {
+            dataArray = arr;
+            break;
+          }
+        }
+      }
+
+      if (dataArray.length === 0 && Array.isArray(interceptedJson)) {
+        dataArray = interceptedJson;
+      }
+
+      if (dataArray.length === 0) {
+        const commonKeys = ['data', 'list', 'items', 'results', 'records'];
+        for (const key of commonKeys) {
+          if (Array.isArray(interceptedJson[key])) {
+            dataArray = interceptedJson[key];
+            break;
+          }
+        }
+      }
+
+      if (dataArray.length === 0) {
+        setJsonPreviewData([]);
+        return;
+      }
+
+      const preview: CollectedData[] = dataArray.slice(0, 10).map((item: any) => {
+        const row: CollectedData = {};
+        for (const rule of rules) {
+          let relativePath = rule.selector;
+          if (arrayPath) {
+            relativePath = relativePath.replace(arrayPath, '').replace('[*].', '').replace('[*]', '');
+          } else {
+            relativePath = relativePath.replace('[*].', '').replace('[*]', '');
+          }
+          
+          const parts = relativePath.split('.').filter(p => p);
+          let value: any = item;
+          for (const part of parts) {
+            if (value === null || value === undefined) break;
+            value = value[part];
+          }
+          
+          row[rule.fieldName] = value ?? null;
+        }
+        return row;
+      });
+
+      setJsonPreviewData(preview);
+    } catch (e) {
+      console.error('生成 JSON 预览失败:', e);
+      setJsonPreviewData([]);
+    }
+  }, [interceptedJson, rules, activeTask?.sourceType]);
 
   const handleRunTask = () => {
     if (!activeTask || rules.length === 0) return;
@@ -1210,53 +1370,88 @@ const App: React.FC = () => {
                   <label className="text-[10px] text-gray-500 uppercase font-semibold block mb-1">
                     拦截 URL（支持 * 通配符）
                   </label>
-                  <input
-                    type="text"
-                    value={activeTask.interceptUrl || ''}
-                    onChange={(e) => handleSetInterceptUrl(e.target.value)}
-                    placeholder="/api/products 或 *.json"
-                    className="w-full bg-gray-800 border border-gray-700 rounded px-2 py-1.5 text-xs text-yellow-400 font-mono focus:border-yellow-500 outline-none"
-                  />
+                  <div className="flex gap-2">
+                    <input
+                      type="text"
+                      value={activeTask.interceptUrl || ''}
+                      onChange={(e) => handleSetInterceptUrl(e.target.value)}
+                      placeholder="/api/products 或 *.json"
+                      className="flex-1 bg-gray-800 border border-gray-700 rounded px-2 py-1.5 text-xs text-yellow-400 font-mono focus:border-yellow-500 outline-none"
+                    />
+                    <button
+                      onClick={handleToggleIntercept}
+                      disabled={!activeTask.interceptUrl}
+                      className={`px-3 py-1.5 rounded text-xs font-medium flex items-center gap-1.5 transition-colors ${
+                        isInterceptEnabled
+                          ? 'bg-green-600 text-white hover:bg-green-500'
+                          : 'bg-gray-700 text-gray-300 hover:bg-gray-600 disabled:bg-gray-800 disabled:text-gray-600'
+                      }`}
+                    >
+                      <Power size={12} />
+                      {isInterceptEnabled ? '停止' : '开始'}
+                    </button>
+                  </div>
                   <p className="text-[10px] text-gray-600 mt-1">
-                    设置后刷新页面，匹配的请求会被拦截
+                    {isInterceptEnabled ? '拦截中，刷新页面捕获请求' : '设置 URL 后点击开始拦截'}
                   </p>
                 </div>
 
-                <div className="px-3 py-2 text-xs text-yellow-300 bg-yellow-900/20 border-b border-gray-800 shrink-0 flex items-center justify-between">
-                  <span>
-                    <Globe size={12} className="inline mr-1" />
-                    已拦截 {networkRequests.length} 个请求
-                  </span>
-                  <button
-                    onClick={() => { setNetworkRequests([]); setInterceptedJson(null); }}
-                    className="text-gray-500 hover:text-white"
-                    title="清空"
+                {/* 网络请求列表 - 可折叠 */}
+                <div className="border-b border-gray-800 shrink-0">
+                  <div 
+                    className={`px-3 py-1.5 text-xs flex items-center justify-between cursor-pointer hover:bg-gray-800/50 ${
+                      isInterceptEnabled ? 'text-green-300 bg-green-900/20' : 'text-gray-500 bg-gray-800/30'
+                    }`}
+                    onClick={() => networkRequests.length > 0 && setIsRequestListCollapsed(!isRequestListCollapsed)}
                   >
-                    <RefreshCw size={12} />
-                  </button>
-                </div>
-
-                {/* 网络请求列表 */}
-                {networkRequests.length > 0 && (
-                  <div className="border-b border-gray-800 max-h-28 overflow-y-auto shrink-0">
-                    {networkRequests.map(req => (
-                      <div
-                        key={req.id}
-                        onClick={() => setSelectedRequestId(req.id)}
-                        className={`px-3 py-1.5 text-[10px] cursor-pointer border-b border-gray-800/50 ${
-                          selectedRequestId === req.id
-                            ? 'bg-blue-900/30 border-l-2 border-l-blue-500'
-                            : 'hover:bg-gray-800'
-                        }`}
+                    <div className="flex items-center gap-1.5">
+                      {networkRequests.length > 0 && (
+                        isRequestListCollapsed ? <ChevronRight size={12} /> : <ChevronDown size={12} />
+                      )}
+                      <Globe size={12} />
+                      <span>{isInterceptEnabled ? `已拦截 ${networkRequests.length} 个请求` : '拦截未启用'}</span>
+                    </div>
+                    {networkRequests.length > 0 && (
+                      <button
+                        onClick={(e) => { 
+                          e.stopPropagation();
+                          setNetworkRequests([]); 
+                          setInterceptedJson(null);
+                          setCachedNetworkRequests([]);
+                          setCachedInterceptedJson(null);
+                        }}
+                        className="text-gray-500 hover:text-white p-0.5"
+                        title="清空"
                       >
-                        <span className={`font-bold mr-2 ${req.method === 'GET' ? 'text-green-400' : 'text-yellow-400'}`}>
-                          {req.method}
-                        </span>
-                        <span className="text-gray-400 truncate">{req.url.split('/').pop()?.split('?')[0] || req.url}</span>
-                      </div>
-                    ))}
+                        <RefreshCw size={12} />
+                      </button>
+                    )}
                   </div>
-                )}
+                  
+                  {networkRequests.length > 0 && !isRequestListCollapsed && (
+                    <div className="max-h-24 overflow-y-auto">
+                      {networkRequests.map(req => (
+                        <div
+                          key={req.id}
+                          onClick={() => {
+                            setSelectedRequestId(req.id);
+                            if (req.responseData) setInterceptedJson(req.responseData);
+                          }}
+                          className={`px-3 py-1.5 text-[10px] cursor-pointer border-t border-gray-800/50 ${
+                            selectedRequestId === req.id
+                              ? 'bg-blue-900/30 border-l-2 border-l-blue-500'
+                              : 'hover:bg-gray-800'
+                          }`}
+                        >
+                          <span className={`font-bold mr-2 ${req.method === 'GET' ? 'text-green-400' : 'text-yellow-400'}`}>
+                            {req.method}
+                          </span>
+                          <span className="text-gray-400 truncate">{req.url.split('/').pop()?.split('?')[0] || req.url}</span>
+                        </div>
+                      ))}
+                    </div>
+                  )}
+                </div>
 
                 {/* JSON 查看器 */}
                 {interceptedJson ? (
@@ -1267,18 +1462,103 @@ const App: React.FC = () => {
                       </div>
                     </div>
 
+                    {/* 已选字段 - 可折叠 */}
                     {rules.length > 0 && (
-                      <div className="border-t border-gray-800 p-2 max-h-32 overflow-y-auto shrink-0">
-                        <div className="text-[10px] text-gray-500 uppercase font-semibold mb-1">已选字段</div>
-                        {rules.map(rule => (
-                          <div key={rule.id} className="flex justify-between items-center text-[10px] bg-gray-800 p-1.5 mb-1 rounded">
-                            <span className="text-green-400 font-mono">{rule.fieldName}</span>
-                            <span className="text-gray-500 truncate flex-1 mx-2">{rule.selector}</span>
-                            <button onClick={() => handleRemoveRule(rule.id)} className="text-gray-600 hover:text-red-400">
-                              <Trash2 size={10} />
+                      <div className="border-t border-gray-800 shrink-0">
+                        <div 
+                          className="px-3 py-1.5 bg-gray-800/30 flex items-center justify-between cursor-pointer hover:bg-gray-800/50"
+                          onClick={() => setIsFieldsCollapsed(!isFieldsCollapsed)}
+                        >
+                          <div className="flex items-center gap-1.5">
+                            {isFieldsCollapsed ? <ChevronRight size={12} className="text-gray-500" /> : <ChevronDown size={12} className="text-gray-500" />}
+                            <span className="text-[10px] text-gray-500 uppercase font-semibold">已选字段 ({rules.length})</span>
+                          </div>
+                        </div>
+                        {!isFieldsCollapsed && (
+                          <div className="p-2 max-h-24 overflow-y-auto">
+                            {rules.map(rule => (
+                              <div key={rule.id} className="flex justify-between items-center text-[10px] bg-gray-800 p-1.5 mb-1 rounded">
+                                <input
+                                  value={rule.fieldName}
+                                  onChange={(e) => handleUpdateRule(rule.id, 'fieldName', e.target.value)}
+                                  className="bg-transparent text-green-400 font-mono border-b border-transparent focus:border-blue-500 outline-none w-20"
+                                />
+                                <span className="text-gray-500 truncate flex-1 mx-2 font-mono">{rule.selector}</span>
+                                <button onClick={() => handleRemoveRule(rule.id)} className="text-gray-600 hover:text-red-400">
+                                  <Trash2 size={10} />
+                                </button>
+                              </div>
+                            ))}
+                          </div>
+                        )}
+                      </div>
+                    )}
+                    
+                    {/* JSON 预览 - 可折叠 */}
+                    {rules.length > 0 && (
+                      <div className="border-t border-gray-800 shrink-0 transition-all duration-300" style={{ height: isJsonPreviewCollapsed ? '32px' : '200px', display: 'flex', flexDirection: 'column' }}>
+                        <div 
+                          className="px-3 py-1.5 bg-gray-950 flex items-center justify-between cursor-pointer hover:bg-gray-900 shrink-0"
+                          onClick={() => setIsJsonPreviewCollapsed(!isJsonPreviewCollapsed)}
+                        >
+                          <div className="flex items-center gap-1.5">
+                            {isJsonPreviewCollapsed ? <ChevronRight size={12} className="text-gray-500" /> : <ChevronDown size={12} className="text-gray-500" />}
+                            <span className="text-[10px] text-gray-500 uppercase font-semibold">预览 ({jsonPreviewData.length} 条)</span>
+                          </div>
+                          <div className="flex items-center gap-1" onClick={e => e.stopPropagation()}>
+                            <button
+                              onClick={() => { navigator.clipboard.writeText(JSON.stringify(jsonPreviewData, null, 2)); alert('已复制'); }}
+                              className="p-1 text-gray-500 hover:text-white hover:bg-gray-800 rounded"
+                              title="复制"
+                            >
+                              <Copy size={12} />
+                            </button>
+                            <button
+                              onClick={() => {
+                                const blob = new Blob([JSON.stringify(jsonPreviewData, null, 2)], { type: 'application/json' });
+                                const url = URL.createObjectURL(blob);
+                                const a = document.createElement('a');
+                                a.href = url;
+                                a.download = `${activeTask?.name || 'data'}_${Date.now()}.json`;
+                                a.click();
+                                URL.revokeObjectURL(url);
+                              }}
+                              className="p-1 text-gray-500 hover:text-blue-400 hover:bg-gray-800 rounded"
+                              title="导出 JSON"
+                            >
+                              <FileJson size={12} />
                             </button>
                           </div>
-                        ))}
+                        </div>
+                        {!isJsonPreviewCollapsed && (
+                          <div className="overflow-auto flex-1 bg-gray-900">
+                            {jsonPreviewData.length > 0 ? (
+                              <table className="w-full text-[10px]">
+                                <thead>
+                                  <tr className="bg-gray-800">
+                                    {Object.keys(jsonPreviewData[0]).map(key => (
+                                      <th key={key} className="p-1 text-left text-gray-400 font-medium sticky top-0 bg-gray-800 z-10">{key}</th>
+                                    ))}
+                                  </tr>
+                                </thead>
+                                <tbody>
+                                  {jsonPreviewData.map((row, i) => (
+                                    <tr key={i} className="border-t border-gray-800 hover:bg-gray-800/50">
+                                      {Object.values(row).map((val, j) => (
+                                        <td key={j} className="p-1 text-gray-500 truncate max-w-[100px]" title={String(val)}>{String(val)}</td>
+                                      ))}
+                                    </tr>
+                                  ))}
+                                </tbody>
+                              </table>
+                            ) : (
+                              <div className="flex flex-col items-center justify-center h-full text-gray-600 space-y-2">
+                                <Braces size={24} className="opacity-20" />
+                                <span className="text-xs">暂无预览数据，请检查 JSON 路径规则</span>
+                              </div>
+                            )}
+                          </div>
+                        )}
                       </div>
                     )}
                   </>
@@ -1401,8 +1681,8 @@ const App: React.FC = () => {
             </div>
 
             {/* 预览/结果 */}
-            {(previewData.length > 0 || collectedData.length > 0) && activeTask.sourceType === 'dom' && (
-              <div className="border-t border-gray-800 flex flex-col shrink-0 transition-all duration-300" style={{ maxHeight: isPreviewCollapsed ? '32px' : '200px' }}>
+            {(rules.length > 0 || collectedData.length > 0) && activeTask.sourceType === 'dom' && (
+              <div className="border-t border-gray-800 flex flex-col shrink-0 transition-all duration-300" style={{ height: isPreviewCollapsed ? '32px' : '200px' }}>
                 <div 
                   className="px-3 py-1.5 bg-gray-950 flex items-center justify-between sticky top-0 shrink-0 cursor-pointer hover:bg-gray-900 transition-colors"
                   onClick={() => setIsPreviewCollapsed(!isPreviewCollapsed)}
@@ -1445,25 +1725,32 @@ const App: React.FC = () => {
                   </div>
                 </div>
                 {!isPreviewCollapsed && (
-                  <div className="overflow-auto flex-1">
-                    <table className="w-full text-[10px]">
-                      <thead>
-                        <tr className="bg-gray-800">
-                          {Object.keys((collectedData.length > 0 ? collectedData : previewData)[0]).map(key => (
-                            <th key={key} className="p-1 text-left text-gray-400 font-medium sticky top-0 bg-gray-800">{key}</th>
-                          ))}
-                        </tr>
-                      </thead>
-                      <tbody>
-                        {(collectedData.length > 0 ? collectedData : previewData).map((row, i) => (
-                          <tr key={i} className="border-t border-gray-800 hover:bg-gray-800/50">
-                            {Object.values(row).map((val, j) => (
-                              <td key={j} className="p-1 text-gray-500 truncate max-w-[100px]" title={String(val)}>{String(val)}</td>
+                  <div className="overflow-auto flex-1 bg-gray-900">
+                    {(collectedData.length > 0 ? collectedData : previewData).length > 0 ? (
+                      <table className="w-full text-[10px]">
+                        <thead>
+                          <tr className="bg-gray-800">
+                            {Object.keys((collectedData.length > 0 ? collectedData : previewData)[0]).map(key => (
+                              <th key={key} className="p-1 text-left text-gray-400 font-medium sticky top-0 bg-gray-800 z-10">{key}</th>
                             ))}
                           </tr>
-                        ))}
-                      </tbody>
-                    </table>
+                        </thead>
+                        <tbody>
+                          {(collectedData.length > 0 ? collectedData : previewData).map((row, i) => (
+                            <tr key={i} className="border-t border-gray-800 hover:bg-gray-800/50">
+                              {Object.values(row).map((val, j) => (
+                                <td key={j} className="p-1 text-gray-500 truncate max-w-[100px]" title={String(val)}>{String(val)}</td>
+                              ))}
+                            </tr>
+                          ))}
+                        </tbody>
+                      </table>
+                    ) : (
+                      <div className="flex flex-col items-center justify-center h-full text-gray-600 space-y-2">
+                        <Globe size={24} className="opacity-20" />
+                        <span className="text-xs">暂无数据，请检查选择器规则</span>
+                      </div>
+                    )}
                   </div>
                 )}
               </div>
