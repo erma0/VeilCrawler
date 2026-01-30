@@ -1,10 +1,6 @@
 import { getSmartSelector, getSmartXPath, getElementRect, evaluateXPath } from '../utils/domUtils';
 import type { SelectorRule } from '../types';
 
-let isSelecting = false;
-let highlightEl: HTMLDivElement | null = null;
-let labelEl: HTMLDivElement | null = null;
-
 // ============ 采集状态持久化 ============
 
 interface CollectState {
@@ -35,6 +31,7 @@ const getCollectState = async (): Promise<CollectState | null> => {
 // ============ 网络请求拦截 ============
 
 let interceptUrlPattern: string = ''; // 用户设置的拦截 URL 模式
+let interceptorReady = false; // 拦截器是否就绪
 
 interface InterceptedRequest {
   id: string;
@@ -56,6 +53,9 @@ const initNetworkInterceptor = () => {
     if (event.data?.type === 'VEIL_CRAWLER_INTERCEPTED') {
       const { id, method, url, status, responseData } = event.data;
       
+      // 避免重复添加
+      if (interceptedRequests.some(r => r.id === id)) return;
+      
       const request: InterceptedRequest = {
         id,
         method,
@@ -66,6 +66,11 @@ const initNetworkInterceptor = () => {
         timestamp: Date.now()
       };
       interceptedRequests.push(request);
+      
+      // 限制缓存大小
+      if (interceptedRequests.length > 100) {
+        interceptedRequests.shift();
+      }
       
       chrome.runtime.sendMessage({
         type: 'JSON_INTERCEPTED',
@@ -82,11 +87,51 @@ const initNetworkInterceptor = () => {
     }
   });
 
-  // 使用外部脚本文件注入，避免 CSP 问题
-  const script = document.createElement('script');
-  script.src = chrome.runtime.getURL('interceptor.js');
-  script.onload = () => script.remove();
-  (document.head || document.documentElement).appendChild(script);
+  // 注入拦截器脚本
+  const injectScript = () => {
+    const script = document.createElement('script');
+    script.src = chrome.runtime.getURL('interceptor.js');
+    script.onload = () => {
+      script.remove();
+      interceptorReady = true;
+      
+      // 注入完成后，从 storage 恢复拦截模式
+      restoreInterceptPattern();
+    };
+    script.onerror = () => {
+      console.warn('VeilCrawler: 拦截器脚本加载失败');
+    };
+    
+    // 优先使用 documentElement，它在 document_start 时就存在
+    const parent = document.head || document.documentElement;
+    if (parent) {
+      parent.appendChild(script);
+    } else {
+      // 极端情况：等待 DOM 可用
+      document.addEventListener('DOMContentLoaded', () => {
+        (document.head || document.documentElement).appendChild(script);
+      }, { once: true });
+    }
+  };
+  
+  injectScript();
+};
+
+// 从 storage 恢复拦截模式
+const restoreInterceptPattern = async () => {
+  try {
+    // 获取当前活动任务的拦截 URL
+    const result = await chrome.storage.local.get(['tasks', 'activeTaskId']);
+    if (result.tasks && result.activeTaskId) {
+      const activeTask = result.tasks.find((t: any) => t.id === result.activeTaskId);
+      if (activeTask?.interceptUrl && activeTask.sourceType === 'json') {
+        console.log('VeilCrawler: 恢复拦截模式', activeTask.interceptUrl);
+        setInterceptPattern(activeTask.interceptUrl);
+      }
+    }
+  } catch (e) {
+    console.warn('VeilCrawler: 恢复拦截模式失败', e);
+  }
 };
 
 // 设置拦截 URL 模式
@@ -108,8 +153,13 @@ try {
 
 // ============ 元素选择功能 ============
 
+let isSelecting = false;
+let highlightEl: HTMLDivElement | null = null;
+let labelEl: HTMLDivElement | null = null;
+
 const createHighlighter = () => {
   if (highlightEl) return;
+  if (!document.body) return; // 确保 body 存在
 
   highlightEl = document.createElement('div');
   highlightEl.id = 'veil-crawler-highlight';
@@ -768,11 +818,25 @@ const checkAndResumeCollect = async () => {
   runCollectTask(state.rules, state.config, state.collectedData);
 };
 
-// 页面加载完成后检查
-if (document.readyState === 'complete') {
-  checkAndResumeCollect();
-} else {
-  window.addEventListener('load', checkAndResumeCollect);
-}
+// 确保 DOM 就绪后再执行需要 DOM 的操作
+const onDomReady = (callback: () => void) => {
+  if (document.readyState === 'loading') {
+    document.addEventListener('DOMContentLoaded', callback);
+  } else {
+    callback();
+  }
+};
+
+// 页面加载完成后检查恢复采集
+const onPageLoad = (callback: () => void) => {
+  if (document.readyState === 'complete') {
+    callback();
+  } else {
+    window.addEventListener('load', callback);
+  }
+};
+
+// 页面完全加载后检查恢复采集
+onPageLoad(checkAndResumeCollect);
 
 console.log('VeilCrawler content script loaded');
