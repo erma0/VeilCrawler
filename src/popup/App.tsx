@@ -105,6 +105,9 @@ const App: React.FC = () => {
   // 页面更新触发器
   const [pageUpdateTrigger, setPageUpdateTrigger] = useState(0);
   
+  // 结果预览区域折叠状态
+  const [isPreviewCollapsed, setIsPreviewCollapsed] = useState(false);
+  
   // 编辑任务状态
   const [editingTaskId, setEditingTaskId] = useState<string | null>(null);
   const [editTaskName, setEditTaskName] = useState('');
@@ -1045,7 +1048,7 @@ const App: React.FC = () => {
                                 onChange={(e) => handleUpdateRule(rule.id, 'isUniqueKey', String(e.target.checked))}
                                 className="hidden"
                               />
-                              <span className={`text-[9px] font-medium transition-colors ${
+                              <span className={`text-[10px] font-medium transition-colors ${
                                 rule.isUniqueKey ? 'text-blue-400' : 'text-gray-500 group-hover:text-gray-400'
                               }`}>主键</span>
                             </label>
@@ -1266,7 +1269,7 @@ const App: React.FC = () => {
               
               {/* 翻页参数 */}
               {activeTask.paginationType !== 'none' && (
-                <div className="mt-1.5 flex items-center gap-3 text-[10px]">
+                <div className="mt-1.5 flex items-center gap-3 text-xs">
                   <div className="flex items-center gap-1">
                     <span className="text-gray-500">间隔:</span>
                     <input
@@ -1315,12 +1318,18 @@ const App: React.FC = () => {
 
             {/* 预览/结果 */}
             {(previewData.length > 0 || collectedData.length > 0) && activeTask.sourceType === 'dom' && (
-              <div className="border-t border-gray-800 flex flex-col shrink-0" style={{ maxHeight: '200px' }}>
-                <div className="px-3 py-1.5 bg-gray-950 flex items-center justify-between sticky top-0 shrink-0">
-                  <span className="text-[10px] text-gray-500 uppercase font-semibold">
-                    {collectedData.length > 0 ? `结果 (${collectedData.length} 条)` : `预览 (${previewData.length} 条)`}
-                  </span>
-                  <div className="flex items-center gap-1">
+              <div className="border-t border-gray-800 flex flex-col shrink-0 transition-all duration-300" style={{ maxHeight: isPreviewCollapsed ? '32px' : '200px' }}>
+                <div 
+                  className="px-3 py-1.5 bg-gray-950 flex items-center justify-between sticky top-0 shrink-0 cursor-pointer hover:bg-gray-900 transition-colors"
+                  onClick={() => setIsPreviewCollapsed(!isPreviewCollapsed)}
+                >
+                  <div className="flex items-center gap-1.5">
+                    {isPreviewCollapsed ? <ChevronRight size={12} className="text-gray-500" /> : <ChevronDown size={12} className="text-gray-500" />}
+                    <span className="text-[10px] text-gray-500 uppercase font-semibold">
+                      {collectedData.length > 0 ? `结果 (${collectedData.length} 条)` : `预览 (${previewData.length} 条)`}
+                    </span>
+                  </div>
+                  <div className="flex items-center gap-1" onClick={e => e.stopPropagation()}>
                     <button
                       onClick={requestPreview}
                       className="p-1 text-gray-500 hover:text-white hover:bg-gray-800 rounded"
@@ -1351,26 +1360,28 @@ const App: React.FC = () => {
                     </button>
                   </div>
                 </div>
-                <div className="overflow-auto flex-1">
-                  <table className="w-full text-[10px]">
-                    <thead>
-                      <tr className="bg-gray-800">
-                        {Object.keys((collectedData.length > 0 ? collectedData : previewData)[0]).map(key => (
-                          <th key={key} className="p-1 text-left text-gray-400 font-medium sticky top-0 bg-gray-800">{key}</th>
-                        ))}
-                      </tr>
-                    </thead>
-                    <tbody>
-                      {(collectedData.length > 0 ? collectedData : previewData).map((row, i) => (
-                        <tr key={i} className="border-t border-gray-800 hover:bg-gray-800/50">
-                          {Object.values(row).map((val, j) => (
-                            <td key={j} className="p-1 text-gray-500 truncate max-w-[100px]" title={String(val)}>{String(val)}</td>
+                {!isPreviewCollapsed && (
+                  <div className="overflow-auto flex-1">
+                    <table className="w-full text-[10px]">
+                      <thead>
+                        <tr className="bg-gray-800">
+                          {Object.keys((collectedData.length > 0 ? collectedData : previewData)[0]).map(key => (
+                            <th key={key} className="p-1 text-left text-gray-400 font-medium sticky top-0 bg-gray-800">{key}</th>
                           ))}
                         </tr>
-                      ))}
-                    </tbody>
-                  </table>
-                </div>
+                      </thead>
+                      <tbody>
+                        {(collectedData.length > 0 ? collectedData : previewData).map((row, i) => (
+                          <tr key={i} className="border-t border-gray-800 hover:bg-gray-800/50">
+                            {Object.values(row).map((val, j) => (
+                              <td key={j} className="p-1 text-gray-500 truncate max-w-[100px]" title={String(val)}>{String(val)}</td>
+                            ))}
+                          </tr>
+                        ))}
+                      </tbody>
+                    </table>
+                  </div>
+                )}
               </div>
             )}
 
