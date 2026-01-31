@@ -150,6 +150,11 @@ const App: React.FC = () => {
     setToast(prev => ({ ...prev, visible: false }));
   }, []);
 
+  // Refs
+  const rulesSourceTaskIdRef = React.useRef<string | null>(null);
+  const selectingModeRef = React.useRef(selectingMode);
+  const activeTaskIdRef = React.useRef(activeTaskId);
+
   // 加载所有任务的规则数量
   useEffect(() => {
     if (tasks.length > 0) {
@@ -272,6 +277,9 @@ const App: React.FC = () => {
   // 加载当前任务的规则
   useEffect(() => {
     if (activeTaskId) {
+      // 切换任务前，先暂停保存，防止旧 rules 覆盖新任务 storage
+      rulesSourceTaskIdRef.current = null;
+      
       chrome.storage.local.get([`rules_${activeTaskId}`], (result) => {
         const savedRules = result[`rules_${activeTaskId}`];
         if (savedRules) {
@@ -283,13 +291,16 @@ const App: React.FC = () => {
         } else {
           setRules([]);
         }
+        // 加载完成后，标记当前 rules 属于该 activeTaskId，允许后续保存
+        rulesSourceTaskIdRef.current = activeTaskId;
       });
     }
   }, [activeTaskId]);
 
   // 保存规则
   useEffect(() => {
-    if (activeTaskId) {
+    // 只有当 activeTaskId 存在，且 rules 确实属于当前任务时才保存
+    if (activeTaskId && rulesSourceTaskIdRef.current === activeTaskId) {
       chrome.storage.local.set({ [`rules_${activeTaskId}`]: rules });
     }
   }, [rules, activeTaskId]);
@@ -355,8 +366,6 @@ const App: React.FC = () => {
   }, []);
 
   // 使用 ref 保存最新的状态，避免闭包问题
-  const selectingModeRef = React.useRef(selectingMode);
-  const activeTaskIdRef = React.useRef(activeTaskId);
   
   useEffect(() => {
     selectingModeRef.current = selectingMode;
@@ -557,8 +566,12 @@ const App: React.FC = () => {
   const handleDeleteTask = (taskId: string, e: React.MouseEvent) => {
     e.stopPropagation();
     
-    // 删除任务对应的规则
-    chrome.storage.local.remove([`rules_${taskId}`]);
+    // 删除任务对应的规则（包括备份）
+    chrome.storage.local.remove([
+      `rules_${taskId}`,
+      `rules_${taskId}_dom`,
+      `rules_${taskId}_json`
+    ]);
     
     const remaining = tasks.filter(t => t.id !== taskId);
     setTasks(remaining);
@@ -790,7 +803,8 @@ const App: React.FC = () => {
   };
 
   const handleSwitchSourceType = (type: 'dom' | 'json') => {
-    const currentType = activeTask?.sourceType;
+    if (!activeTaskId || !activeTask) return;
+    const currentType = activeTask.sourceType;
     
     // 切换前保存当前模式的拦截记录
     if (currentType === 'json' && type === 'dom') {
@@ -798,27 +812,40 @@ const App: React.FC = () => {
       setCachedInterceptedJson(interceptedJson);
     }
     
-    setRules([]);
-    handleUpdateTaskConfig({ sourceType: type });
+    // 1. 保存当前模式的规则备份 (确保保存完成后再加载)
+    const backupKey = `rules_${activeTaskId}_${currentType}`;
+    console.log(`[SwitchSource] Backing up rules to ${backupKey}:`, rules);
     
-    if (type === 'dom') {
-      // 切换到 DOM 模式时关闭拦截，但不清空记录
-      if (isInterceptEnabled) {
-        setIsInterceptEnabled(false);
-        chrome.runtime.sendMessage({
-          type: 'SET_INTERCEPT_URL',
-          url: '',
-          enabled: false
-        });
-      }
-    } else if (type === 'json') {
-      // 切换到 JSON 模式时恢复缓存的拦截记录
-      if (cachedNetworkRequests.length > 0) {
-        setNetworkRequests(cachedNetworkRequests);
-        setInterceptedJson(cachedInterceptedJson);
-        setSelectedRequestId(cachedNetworkRequests[cachedNetworkRequests.length - 1].id);
-      }
-    }
+    chrome.storage.local.set({ [backupKey]: rules }, () => {
+      // 2. 尝试加载目标模式的规则备份
+      const targetKey = `rules_${activeTaskId}_${type}`;
+      chrome.storage.local.get([targetKey], (result) => {
+        const savedRules = result[targetKey] || [];
+        console.log(`[SwitchSource] Loaded rules from ${targetKey}:`, savedRules);
+        
+        setRules(savedRules);
+        handleUpdateTaskConfig({ sourceType: type });
+        
+        if (type === 'dom') {
+          // 切换到 DOM 模式时关闭拦截，但不清空记录
+          if (isInterceptEnabled) {
+            setIsInterceptEnabled(false);
+            chrome.runtime.sendMessage({
+              type: 'SET_INTERCEPT_URL',
+              url: '',
+              enabled: false
+            });
+          }
+        } else if (type === 'json') {
+          // 切换到 JSON 模式时恢复缓存的拦截记录
+          if (cachedNetworkRequests.length > 0) {
+            setNetworkRequests(cachedNetworkRequests);
+            setInterceptedJson(cachedInterceptedJson);
+            setSelectedRequestId(cachedNetworkRequests[cachedNetworkRequests.length - 1].id);
+          }
+        }
+      });
+    });
   };
 
   // 设置拦截 URL
