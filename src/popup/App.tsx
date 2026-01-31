@@ -172,6 +172,21 @@ const App: React.FC = () => {
     }
   }, [rules.length, activeTaskId]);
 
+  // 切换任务时，清空上一个任务的临时状态/缓存
+  useEffect(() => {
+    setPreviewData([]);
+    setCollectedData([]);
+    setInterceptedJson(null);
+    setNetworkRequests([]);
+    setSelectedRequestId(null);
+    setJsonPreviewData([]);
+    setCachedNetworkRequests([]);
+    setCachedInterceptedJson(null);
+    setIsRequestListCollapsed(false);
+    setIsJsonPreviewCollapsed(false);
+    setIsPreviewCollapsed(false);
+  }, [activeTaskId]);
+
   const activeTask = tasks.find(t => t.id === activeTaskId);
 
   // 切换任务时，恢复该任务的拦截状态
