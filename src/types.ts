@@ -7,11 +7,13 @@ export interface Task {
   url: string;
   sourceType: 'dom' | 'json';
   interceptUrl?: string;
+  interceptEnabled?: boolean; // 是否启用拦截
   paginationType: PaginationType;
   nextPageSelector?: string;
   maxItems?: number;
   pageInterval?: number;  // 翻页间隔（毫秒）
   deduplicate?: boolean;  // 是否去重
+  autoReload?: boolean;   // 是否在无数据时自动刷新页面
   count: number;
 }
 

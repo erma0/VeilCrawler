@@ -1,5 +1,6 @@
 import React, { useState, useEffect, useCallback } from 'react';
 import { Layers, Settings, Play, Trash2, Plus, MousePointer2, Ban, ArrowDownToLine, MousePointerClick, Power, Code, Braces, ChevronRight, ChevronDown, Globe, RefreshCw, Edit2, Check, X, FileJson, FileSpreadsheet, Copy, StopCircle, Upload, Download, Package, Link } from 'lucide-react';
+import Toast, { ToastType } from './components/Toast';
 import type { Task, SelectorRule, CollectedData, PaginationType } from '../types';
 import { getDomain } from '../utils/urlUtils';
 
@@ -134,6 +135,21 @@ const App: React.FC = () => {
   // 获取任务的规则数量
   const [taskRuleCounts, setTaskRuleCounts] = useState<Record<string, number>>({});
 
+  // Toast state
+  const [toast, setToast] = useState<{ message: string; type: ToastType; visible: boolean }>({
+    message: '',
+    type: 'info',
+    visible: false
+  });
+
+  const showToast = (message: string, type: ToastType = 'info') => {
+    setToast({ message, type, visible: true });
+  };
+
+  const hideToast = useCallback(() => {
+    setToast(prev => ({ ...prev, visible: false }));
+  }, []);
+
   // 加载所有任务的规则数量
   useEffect(() => {
     if (tasks.length > 0) {
@@ -158,12 +174,49 @@ const App: React.FC = () => {
 
   const activeTask = tasks.find(t => t.id === activeTaskId);
 
+  // 切换任务时，恢复该任务的拦截状态
+  useEffect(() => {
+    if (activeTaskId && tasks.length > 0) {
+      const task = tasks.find(t => t.id === activeTaskId);
+      if (task) {
+        // 如果是 JSON 模式，根据任务配置恢复拦截状态
+        if (task.sourceType === 'json') {
+          const shouldEnable = !!task.interceptEnabled;
+          setIsInterceptEnabled(shouldEnable);
+          
+          // 同步到底层拦截器
+          chrome.runtime.sendMessage({
+            type: 'SET_INTERCEPT_URL',
+            url: task.interceptUrl || '',
+            enabled: shouldEnable
+          });
+          
+          // 如果切换到了一个未启用的任务，清空当前的临时显示
+          if (!shouldEnable) {
+            setNetworkRequests([]);
+            setInterceptedJson(null);
+          }
+        } else {
+          // DOM 模式下默认关闭拦截显示（但不一定停止后台，除非为了省资源）
+          // 这里选择关闭以避免混淆
+          setIsInterceptEnabled(false);
+          chrome.runtime.sendMessage({
+            type: 'SET_INTERCEPT_URL',
+            url: '',
+            enabled: false
+          });
+        }
+      }
+    }
+  }, [activeTaskId, tasks.length]); // 注意：不要把 tasks 作为依赖，否则更新任务会死循环，只依赖 ID 变化或初始化
+
   // 从 storage 加载任务
   useEffect(() => {
     chrome.storage.local.get(['tasks', 'activeTaskId', '_collectState', '_interceptState'], (result) => {
-      if (result._interceptState?.enabled) {
-        setIsInterceptEnabled(true);
-      }
+      // 移除这里的 setIsInterceptEnabled(true)，改为依赖 activeTaskId 的 effect 来设置
+      // if (result._interceptState?.enabled) {
+      //   setIsInterceptEnabled(true);
+      // }
 
       if (result.tasks && result.tasks.length > 0) {
         // 检查是否有正在进行的采集
@@ -208,6 +261,10 @@ const App: React.FC = () => {
         const savedRules = result[`rules_${activeTaskId}`];
         if (savedRules) {
           setRules(savedRules);
+          // 如果有规则，默认展开已选字段列表，方便用户查看
+          if (savedRules.length > 0) {
+            setIsFieldsCollapsed(false);
+          }
         } else {
           setRules([]);
         }
@@ -354,6 +411,11 @@ const App: React.FC = () => {
         // 采集恢复（页面跳转后继续）
         console.log('VeilCrawler: 采集已恢复，已有', message.data.length, '条数据');
         setCollectedData(message.data);
+        
+        // 清理旧的拦截记录，因为页面已经刷新，旧的记录不再适用
+        setNetworkRequests([]);
+        setInterceptedJson(null);
+
         // 更新对应任务的状态
         if (message.taskId) {
           setTasks(prev => prev.map(t =>
@@ -454,14 +516,15 @@ const App: React.FC = () => {
     const finalName = generateTaskName(baseName);
     
     const newTask: Task = {
-      id: Date.now().toString(),
-      name: finalName,
-      status: 'idle',
-      url: newTaskUrl.trim(),
-      sourceType: 'dom',
-      paginationType: 'none',
-      count: 0
-    };
+        id: Date.now().toString(),
+        name: finalName,
+        status: 'idle',
+        url: newTaskUrl.trim(),
+        sourceType: 'dom',
+        paginationType: 'none',
+        interceptEnabled: false, // 默认为关闭
+        count: 0
+      };
     setTasks([...tasks, newTask]);
     setActiveTaskId(newTask.id);
     setRules([]);
@@ -616,12 +679,12 @@ const App: React.FC = () => {
           }
         });
       } else {
-        alert('无效的任务文件格式');
+        showToast('无效的任务文件格式', 'error');
         return;
       }
       
       if (importedTasks.length === 0) {
-        alert('未找到有效的任务数据');
+        showToast('未找到有效的任务数据', 'error');
         return;
       }
 
@@ -640,10 +703,10 @@ const App: React.FC = () => {
         setActiveTab('config');
       }
       
-      alert(`成功导入 ${importedTasks.length} 个任务！`);
+      showToast(`成功导入 ${importedTasks.length} 个任务！`, 'success');
     } catch (err) {
       console.error('Import failed:', err);
-      alert('导入失败：数据格式错误');
+      showToast('导入失败：数据格式错误', 'error');
     }
   };
 
@@ -668,7 +731,7 @@ const App: React.FC = () => {
       setImportUrl('');
     } catch (error) {
       console.error('Fetch failed:', error);
-      alert('从 URL 导入失败，请检查链接是否有效且允许跨域访问。');
+      showToast('从 URL 导入失败，请检查链接是否有效且允许跨域访问。', 'error');
     }
   };
 
@@ -695,7 +758,7 @@ const App: React.FC = () => {
           processImportData(importData);
         } catch (err) {
           console.error('Import failed:', err);
-          alert('导入失败：文件格式错误');
+          showToast('导入失败：文件格式错误', 'error');
         }
       };
       reader.readAsText(file);
@@ -881,15 +944,38 @@ const App: React.FC = () => {
   const handleRunTask = () => {
     if (!activeTask || rules.length === 0) return;
 
+    // 1. 如果是 JSON 模式且未开启拦截，自动开启并同步 UI
+    if (activeTask.sourceType === 'json' && !isInterceptEnabled) {
+      setIsInterceptEnabled(true);
+      handleUpdateTaskConfig({ interceptEnabled: true });
+      chrome.runtime.sendMessage({
+        type: 'SET_INTERCEPT_URL',
+        url: activeTask.interceptUrl || '',
+        enabled: true
+      });
+    }
+
     // 设置为运行中
     handleUpdateTaskConfig({ status: 'active' });
     setCollectedData([]);
+    
+    // 清理拦截记录
+    if (activeTask.sourceType === 'json') {
+      setNetworkRequests([]);
+      setInterceptedJson(null);
+    }
 
-    chrome.runtime.sendMessage({
-      type: 'RUN_TASK',
-      rules,
-      config: activeTask
-    });
+    // 2. 显式清除 content script 的采集状态，确保不是“恢复”模式，触发刷新
+    chrome.runtime.sendMessage({ type: 'CLEAR_COLLECT_STATE' });
+
+    // 稍微延迟发送 RUN_TASK，确保状态同步
+    setTimeout(() => {
+      chrome.runtime.sendMessage({
+        type: 'RUN_TASK',
+        rules,
+        config: { ...activeTask, status: 'active' }
+      });
+    }, 100);
   };
 
   // 停止任务
@@ -950,7 +1036,7 @@ const App: React.FC = () => {
     if (data.length === 0) return;
 
     navigator.clipboard.writeText(JSON.stringify(data, null, 2));
-    alert('已复制到剪贴板');
+    showToast('已复制到剪贴板', 'success');
   };
 
   return (
@@ -1453,16 +1539,7 @@ const App: React.FC = () => {
                   )}
                 </div>
 
-                {/* JSON 查看器 */}
-                {interceptedJson ? (
-                  <>
-                    <div className="flex-1 overflow-y-auto p-2 min-h-0">
-                      <div className="bg-gray-950 p-2 rounded border border-gray-800 h-full overflow-auto">
-                        <JsonNode name="root" value={interceptedJson} path="" onSelect={handleAddJsonRule} />
-                      </div>
-                    </div>
-
-                    {/* 已选字段 - 可折叠 */}
+                    {/* 已选字段 - 可折叠 (移除 interceptedJson 条件，始终显示) */}
                     {rules.length > 0 && (
                       <div className="border-t border-gray-800 shrink-0">
                         <div 
@@ -1493,8 +1570,17 @@ const App: React.FC = () => {
                         )}
                       </div>
                     )}
-                    
-                    {/* JSON 预览 - 可折叠 */}
+
+                    {/* JSON 查看器 */}
+                    {interceptedJson ? (
+                      <>
+                        <div className="flex-1 overflow-y-auto p-2 min-h-0">
+                          <div className="bg-gray-950 p-2 rounded border border-gray-800 h-full overflow-auto">
+                            <JsonNode name="root" value={interceptedJson} path="" onSelect={handleAddJsonRule} />
+                          </div>
+                        </div>
+                        
+                        {/* JSON 预览 - 可折叠 */}
                     {rules.length > 0 && (
                       <div className="border-t border-gray-800 shrink-0 transition-all duration-300" style={{ height: isJsonPreviewCollapsed ? '32px' : '200px', display: 'flex', flexDirection: 'column' }}>
                         <div 
@@ -1507,7 +1593,7 @@ const App: React.FC = () => {
                           </div>
                           <div className="flex items-center gap-1" onClick={e => e.stopPropagation()}>
                             <button
-                              onClick={() => { navigator.clipboard.writeText(JSON.stringify(jsonPreviewData, null, 2)); alert('已复制'); }}
+                              onClick={() => { navigator.clipboard.writeText(JSON.stringify(jsonPreviewData, null, 2)); showToast('已复制', 'success'); }}
                               className="p-1 text-gray-500 hover:text-white hover:bg-gray-800 rounded"
                               title="复制"
                             >
@@ -1633,8 +1719,8 @@ const App: React.FC = () => {
               
               {/* 翻页参数 */}
               {activeTask.paginationType !== 'none' && (
-                <div className="mt-1.5 flex items-center gap-3 text-xs">
-                  <div className="flex items-center gap-1">
+                <div className="mt-1.5 flex items-center gap-2 text-xs">
+                  <div className="flex items-center gap-1 shrink-0">
                     <span className="text-gray-500">间隔:</span>
                     <input
                       type="number"
@@ -1645,37 +1731,56 @@ const App: React.FC = () => {
                       }}
                       placeholder="智能"
                       title="留空: 智能检测 DOM 变化 (推荐)&#10;设置数值: 固定等待时间 (毫秒)"
-                      className="w-14 bg-gray-800 border border-gray-700 rounded px-1.5 py-0.5 text-white focus:border-blue-500 outline-none placeholder-gray-600"
+                      className="w-10 bg-gray-800 border border-gray-700 rounded px-1 py-0.5 text-white focus:border-blue-500 outline-none placeholder-gray-600 text-[10px]"
                     />
-                    <span className="text-gray-600">ms</span>
+                    <span className="text-gray-600 text-[10px]">ms</span>
                   </div>
-                  <div className="flex items-center gap-1">
+                  <div className="flex items-center gap-1 shrink-0">
                     <span className="text-gray-500">数量:</span>
                     <input
                       type="number"
                       value={activeTask.maxItems || ''}
                       onChange={(e) => handleUpdateTaskConfig({ maxItems: parseInt(e.target.value) || 0 })}
                       placeholder="不限"
-                      className="w-14 bg-gray-800 border border-gray-700 rounded px-1.5 py-0.5 text-white focus:border-blue-500 outline-none"
+                      className="w-10 bg-gray-800 border border-gray-700 rounded px-1 py-0.5 text-white focus:border-blue-500 outline-none text-[10px]"
                     />
                   </div>
                   
-                  {/* 去重开关 - 放在同一行 */}
-                  <label className="flex items-center gap-1.5 cursor-pointer group ml-auto" title="开启后将过滤重复数据&#10;可在字段配置中勾选“主键”来指定唯一标识">
-                    <span className="text-gray-500 group-hover:text-gray-400 transition-colors">
+                  {/* 去重开关 */}
+                  <label className="flex items-center gap-1 cursor-pointer group ml-auto shrink-0" title="开启后将过滤重复数据&#10;可在字段配置中勾选“主键”来指定唯一标识">
+                    <span className="text-[10px] text-gray-500 group-hover:text-gray-400 transition-colors">
                       去重
                     </span>
                     <div className="relative">
                       <input
                         type="checkbox"
-                        checked={activeTask.deduplicate !== false} // 默认为 true
+                        checked={activeTask.deduplicate !== false}
                         onChange={(e) => handleUpdateTaskConfig({ deduplicate: e.target.checked })}
                         className="peer sr-only"
                       />
-                      <div className="w-6 h-3 bg-gray-700 rounded-full peer-checked:bg-blue-600 transition-colors"></div>
-                      <div className="absolute left-0.5 top-0.5 w-2 h-2 bg-white rounded-full transition-transform peer-checked:translate-x-3"></div>
+                      <div className="w-5 h-2.5 bg-gray-700 rounded-full peer-checked:bg-blue-600 transition-colors"></div>
+                      <div className="absolute left-0.5 top-0.5 w-1.5 h-1.5 bg-white rounded-full transition-transform peer-checked:translate-x-2.5"></div>
                     </div>
                   </label>
+
+                  {/* 自动刷新开关 (仅 JSON 模式且有翻页时显示) */}
+                  {activeTask.sourceType === 'json' && (
+                    <label className="flex items-center gap-1 cursor-pointer group ml-1 pl-1 border-l border-gray-700 shrink-0" title="开启后，点击运行将强制刷新页面以捕获初始请求&#10;关闭后，需要手动触发请求">
+                      <span className="text-[10px] text-gray-500 group-hover:text-gray-400 transition-colors">
+                        刷新
+                      </span>
+                      <div className="relative">
+                        <input
+                          type="checkbox"
+                          checked={activeTask.autoReload !== false}
+                          onChange={(e) => handleUpdateTaskConfig({ autoReload: e.target.checked })}
+                          className="peer sr-only"
+                        />
+                        <div className="w-5 h-2.5 bg-gray-700 rounded-full peer-checked:bg-blue-600 transition-colors"></div>
+                        <div className="absolute left-0.5 top-0.5 w-1.5 h-1.5 bg-white rounded-full transition-transform peer-checked:translate-x-2.5"></div>
+                      </div>
+                    </label>
+                  )}
                 </div>
               )}
             </div>
@@ -1727,11 +1832,11 @@ const App: React.FC = () => {
                 {!isPreviewCollapsed && (
                   <div className="overflow-auto flex-1 bg-gray-900">
                     {(collectedData.length > 0 ? collectedData : previewData).length > 0 ? (
-                      <table className="w-full text-[10px]">
+                      <table className="min-w-full text-[10px] table-auto">
                         <thead>
                           <tr className="bg-gray-800">
                             {Object.keys((collectedData.length > 0 ? collectedData : previewData)[0]).map(key => (
-                              <th key={key} className="p-1 text-left text-gray-400 font-medium sticky top-0 bg-gray-800 z-10">{key}</th>
+                              <th key={key} className="p-2 text-left text-gray-400 font-medium sticky top-0 bg-gray-800 z-10 whitespace-nowrap border-b border-gray-700">{key}</th>
                             ))}
                           </tr>
                         </thead>
@@ -1739,7 +1844,7 @@ const App: React.FC = () => {
                           {(collectedData.length > 0 ? collectedData : previewData).map((row, i) => (
                             <tr key={i} className="border-t border-gray-800 hover:bg-gray-800/50">
                               {Object.values(row).map((val, j) => (
-                                <td key={j} className="p-1 text-gray-500 truncate max-w-[100px]" title={String(val)}>{String(val)}</td>
+                                <td key={j} className="p-2 text-gray-500 whitespace-nowrap max-w-[300px] truncate border-r border-gray-800/50 last:border-r-0" title={String(val)}>{String(val)}</td>
                               ))}
                             </tr>
                           ))}
@@ -1805,6 +1910,14 @@ const App: React.FC = () => {
           </div>
         )}
       </div>
+      {/* Toast */}
+      {toast.visible && (
+        <Toast
+          message={toast.message}
+          type={toast.type}
+          onClose={hideToast}
+        />
+      )}
     </div>
   );
 };

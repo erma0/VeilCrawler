@@ -36,6 +36,13 @@
       "js": ["content.js"],
       "run_at": "document_start",
       "all_frames": true
+    },
+    {
+      "world": "MAIN",
+      "matches": ["<all_urls>"],
+      "js": ["interceptor.js"],
+      "run_at": "document_start",
+      "all_frames": true
     }
   ],
   "web_accessible_resources": [
