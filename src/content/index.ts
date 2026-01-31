@@ -73,14 +73,16 @@ const initNetworkInterceptor = () => {
     }
 
     if (event.data?.type === 'VEIL_CRAWLER_INTERCEPTED') {
-      const { id, method, url, status, responseData, timestamp } = event.data;
+      const { id, method, url, status, responseData, timestamp, requestType } = event.data;
       
-      console.log(`[VeilCrawler] Content script received interception: ${url}`);
+      console.log(`[VeilCrawler] Content script received interception (${requestType || 'unknown'}): ${url}`);
 
       if (interceptedRequests.some(r => r.id === id)) return;
       
       const request: InterceptedRequest = {
-        id, method, url, type: 'fetch', status, responseData,
+        id, method, url, 
+        type: requestType === 'xhr' ? 'xhr' : 'fetch', 
+        status, responseData,
         timestamp: timestamp || Date.now()
       };
       interceptedRequests.push(request);
@@ -90,7 +92,7 @@ const initNetworkInterceptor = () => {
       chrome.runtime.sendMessage({
         type: 'JSON_INTERCEPTED',
         data: responseData,
-        request: { id, method, url, status }
+        request: { id, method, url, status, requestType: request.type }
       }).catch(() => {});
     }
   });
