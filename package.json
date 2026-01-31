@@ -2,6 +2,9 @@
   "name": "veilcrawler",
   "private": true,
   "version": "1.0.0",
+  "description": "轻量可视化通用Web数据采集插件，支持DOM元素选择与JSON API拦截。",
+  "author": "erma0",
+  "homepage": "https://github.com/erma0/VeilCrawler",
   "type": "module",
   "scripts": {
     "dev": "vite build --watch",

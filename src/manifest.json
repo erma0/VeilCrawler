@@ -2,13 +2,18 @@
   "manifest_version": 3,
   "name": "VeilCrawler",
   "version": "1.0.0",
-  "description": "轻量可视化通用Web数据采集插件",
+  "description": "轻量可视化通用Web数据采集插件，支持DOM元素选择与JSON API拦截。",
+  "homepage_url": "https://github.com/erma0/VeilCrawler",
+  "author": "erma0",
   "permissions": [
     "activeTab",
     "tabs",
     "scripting",
     "storage",
     "sidePanel"
+  ],
+  "host_permissions": [
+    "<all_urls>"
   ],
   "action": {
     "default_title": "VeilCrawler",
@@ -50,5 +55,6 @@
       "resources": ["interceptor.js"],
       "matches": ["<all_urls>"]
     }
-  ]
+  ],
+  "offline_enabled": true
 }
