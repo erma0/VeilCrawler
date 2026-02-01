@@ -86,7 +86,7 @@ VeilCrawler 基于 **Manifest V3** 标准开发，支持所有基于 **Chromium*
 
 如果您不想自行编译代码，可以直接下载 Release 页面发布的安装包。
 
-1.  前往本项目的 **[Releases 页面](https://github.com/yourusername/VeilCrawler/releases)**。
+1.  前往本项目的 **[Releases 页面](https://github.com/erma0/VeilCrawler/releases)**。
 2.  下载最新版本的 `.crx` 文件或 `dist.zip` 压缩包。
 3.  **安装步骤**:
     - 打开 Chrome 浏览器，在地址栏输入 `chrome://extensions/` 并回车。
@@ -104,7 +104,7 @@ VeilCrawler 基于 **Manifest V3** 标准开发，支持所有基于 **Chromium*
 ### 1. 下载源码并安装依赖
 
 ```bash
-git clone https://github.com/yourusername/VeilCrawler.git
+git clone https://github.com/erma0/VeilCrawler.git
 cd VeilCrawler
 pnpm install
 ```
